@@ -1,0 +1,22 @@
+{
+  "name": "embers-of-memory",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "assets:audit": "node scripts/audit-assets.mjs",
+    "assets:links": "node scripts/verify-asset-links.mjs"
+  },
+  "devDependencies": {
+    "sharp": "^0.34.5",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "phaser": "^4.1.0",
+    "replicate": "^1.4.0"
+  }
+}
