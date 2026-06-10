@@ -1,0 +1,49 @@
+/* Shared pixel-art UI theme — loaded once from main.ts.
+   The palette mirrors scripts/draw-pixel-ui.mjs; keep them in sync. */
+
+:root {
+  --ink: #18100a;
+  --shadow: #2e1c0c;
+  --wood: #5c3418;
+  --wood-light: #6e3e1c;
+  --parchment: #e8d5b0;
+  --parchment-dark: #d6be94;
+  --gold: #d4a855;
+  --gold-dark: #a87c36;
+  --highlight: #f2d19a;
+  --ember: #c87a4a;
+  --font-display: 'Alagard', Georgia, serif;
+  --font-body: Georgia, serif;
+}
+
+/* Pixel-art surfaces: no rounded corners anywhere in the overlay UI, and
+   every raster image (portraits, icons, chips) keeps its texels sharp. */
+#ui-layer * { border-radius: 0 !important; }
+#ui-layer img { image-rendering: pixelated; }
+
+/* Chunky stacked border for panels and modals — replaces the hairline. */
+#ui-layer .project-panel,
+#ui-layer .scholar-panel,
+#ui-layer .institution-panel,
+#ui-layer .treasury-panel,
+#ui-layer .ideology-panel,
+#ui-layer .world-panel,
+#ui-layer .modal-card,
+#ui-layer .event-modal-card,
+#ui-layer .release-modal-card,
+#ui-layer .release-modal-card-v2 {
+  border: 2px solid var(--wood) !important;
+  box-shadow: 0 0 0 2px var(--ink), 0 12px 48px rgba(0, 0, 0, 0.85) !important;
+}
+
+/* Display headers in the pixel face; body copy stays a readable serif. */
+#ui-layer .panel-title,
+#ui-layer .ip-title,
+#ui-layer .wp-title,
+#ui-layer .tp-title,
+#ui-layer .sp-title,
+#ui-layer .modal-title,
+#ui-layer .release-title-v2 {
+  font-family: var(--font-display);
+  letter-spacing: 0.04em;
+}

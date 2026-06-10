@@ -21,8 +21,8 @@ import { extname, join } from 'node:path';
 const outDir = process.argv[2] ?? 'screenshots';
 mkdirSync(outDir, { recursive: true });
 
-const chromium = (await import('@sparticuz/chromium')).default;
 const puppeteer = await import('puppeteer-core');
+import { resolveBrowser } from './resolve-browser.mjs';
 
 // ── Tiny static server over dist/ ─────────────────────────────────
 const MIME = {
@@ -50,10 +50,10 @@ if (!existsSync('dist/index.html')) {
 }
 
 // ── Browser ────────────────────────────────────────────────────────
-chromium.setGraphicsMode = true; // WebGL via SwiftShader — Phaser 4 needs it
+const { executablePath, args } = await resolveBrowser();
 const browser = await puppeteer.launch({
-  args: [...chromium.args, '--enable-unsafe-swiftshader'],
-  executablePath: await chromium.executablePath(),
+  args,
+  executablePath,
   headless: 'shell',
   defaultViewport: { width: 1280, height: 720 },
 });

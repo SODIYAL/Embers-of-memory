@@ -29,6 +29,7 @@ import { FORMATS } from '../data/formats';
 import type { GameSpeed } from '../game/TimeManager';
 import type { Project, StageKey } from '../models/Project';
 import type { Work } from '../models/Work';
+import { GROUND, BUILDINGS, COURTYARD_PROPS, LANTERNS, WINDOW_GLOWS } from './campusLayout';
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -36,6 +37,8 @@ const BAR_H         = 56;
 const BAR_ALPHA     = 0.82;
 const BAR_COLOR     = 0x0d0704;
 const PROGRESS_BAR_W = 320;
+// Pixel display face for headers/buttons; body text stays Georgia.
+const DISPLAY_FONT  = 'Alagard, Georgia, serif';
 
 const TREASURY_THRESHOLDS = { prosperous: 300, stable: 150, strained: 50 };
 const TREASURY_LABELS: Record<string, string> = {
@@ -258,13 +261,17 @@ export class CampusScene extends Phaser.Scene {
 
     this.scholarPanel.onHireRequest = (idx) => this.showSalaryModal(idx);
 
-    // Background
-    this.add.image(cx, height / 2, 'bg_hall_day').setDisplaySize(width, height);
+    // Composed pixel-art stage: sky backdrop, tiled plateau, buildings,
+    // courtyard props. Replaces the old painted background.
+    this.buildCampusStage();
 
     // Campus life (drawn before bars so they appear under the chrome)
     this.ensureCampusAnims();
     this.buildAmbientLayer();
     this.buildActiveWorkLayer();
+    // Actors (and the courtyard props that y-sort with them) render above
+    // the ambient layer and the workstation.
+    this.children.bringToTop(this.actorsLayer);
     this.buildScholarSprites();
     this.buildStudents();
     this.buildMoodLayers(width, height);
@@ -386,6 +393,8 @@ export class CampusScene extends Phaser.Scene {
       this.queueJournalNote(`Word has spread. The institution is now known as a${tierName === 'Academy' ? 'n' : ''} ${tierName}.`);
       // Students begin to appear in the courtyard from Academy tier.
       if (this.studentSprites.length === 0) this.buildStudents();
+      // New wings appear on the campus as the institution grows.
+      this.buildTierSetPieces();
     };
     const onZoneUnlocked = ({ zoneName }: EventPayloads[typeof GameEvents.ZONE_UNLOCKED]) => {
       this.showToast(`Zone unlocked: ${zoneName}`, '#d4a855');
@@ -647,17 +656,77 @@ export class CampusScene extends Phaser.Scene {
     this.cameras.main.fadeIn(600, 26, 15, 10);
   }
 
+  // ── Campus stage ───────────────────────────────────────────────────
+
+  // Lanterns swap to their lit texture after dusk; tier-gated set pieces
+  // are tracked so promotions can add them without rebuilding the scene.
+  private lanternSprites: Phaser.GameObjects.Image[] = [];
+  private placedSetPieceKeys = new Set<string>();
+
+  // Compose the campus from the pixel-art kit: procedural sky, tiled
+  // plateau, architecture, courtyard props. All sprites are 1× pixel art
+  // drawn at scale 2 so the grain matches the character sheets.
+  private buildCampusStage() {
+    this.placedSetPieceKeys.clear();
+    this.lanternSprites = [];
+
+    // Sky backdrop (640×360 at 2×, horizon lands at SKY_HORIZON_Y).
+    this.add.image(0, 0, 'bg_campus_sky').setOrigin(0).setScale(2);
+
+    // Ground bands — tileSprites tile at 1× and scale up with the grain.
+    const band = (r: { x: number; y: number; w: number; h: number }, tex: string) =>
+      this.add.tileSprite(r.x, r.y, r.w / 2, r.h / 2, tex).setOrigin(0).setScale(2);
+    band(GROUND.grass, 'tile_grass');
+    band(GROUND.courtyard, 'tile_flagstone');
+    band(GROUND.path, 'tile_flagstone');
+    band(GROUND.rim, 'tile_wall');
+
+    // Soft edge shadow where the courtyard meets the grass.
+    this.add.rectangle(
+      GROUND.courtyard.x + GROUND.courtyard.w / 2, GROUND.courtyard.y + 2,
+      GROUND.courtyard.w, 4, 0x120804, 0.25,
+    );
+
+    // Architecture + the actor layer (so courtyard props y-sort with
+    // scholars). Tier-gated pieces are added via buildTierSetPieces.
+    this.actorsLayer = this.add.container(0, 0);
+    this.buildTierSetPieces();
+
+    // Lanterns flank the hall door and courtyard corners; lit after dusk.
+    for (const p of LANTERNS) {
+      const lantern = this.add.image(p.x, p.y, 'prop_lantern_off')
+        .setOrigin(0.5, 1)
+        .setScale(2);
+      this.actorsLayer.add(lantern);
+      this.lanternSprites.push(lantern);
+    }
+  }
+
+  // Place buildings and courtyard props allowed at the current tier that
+  // are not on the stage yet. Called at build time and on TIER_PROMOTED.
+  private buildTierSetPieces() {
+    const tier = Game.state.tier;
+    for (const piece of [...BUILDINGS, ...COURTYARD_PROPS]) {
+      const id = `${piece.key}@${piece.x},${piece.y}`;
+      if (this.placedSetPieceKeys.has(id)) continue;
+      if (piece.minTier && tier < piece.minTier) continue;
+      if (!this.textures.exists(piece.key)) continue;
+      this.placedSetPieceKeys.add(id);
+      const img = this.add.image(piece.x, piece.y, piece.key)
+        .setOrigin(0.5, 1)
+        .setScale(2);
+      if (piece.walkable) this.actorsLayer.add(img);
+      else this.children.moveBelow(img, this.actorsLayer);
+    }
+  }
+
   // ── Animations & input ─────────────────────────────────────────────
 
   // Register sprite animations once (anims are global across scene restarts).
-  // Pixel-art sheets get NEAREST filtering so the 2x scale stays crisp.
+  // NEAREST filtering comes from the global render.pixelArt flag.
   private ensureCampusAnims() {
-    const nearest = (Phaser.Textures as unknown as { FilterMode?: { NEAREST: number }; NEAREST?: number });
-    const filterValue = nearest.FilterMode?.NEAREST ?? nearest.NEAREST ?? 1;
     const make = (key: string, tex: string, frames: number, rate: number, repeat: number, yoyo = false) => {
       if (!this.textures.exists(tex)) return;
-      const t = this.textures.get(tex) as unknown as { setFilter?: (f: number) => void };
-      t.setFilter?.(filterValue);
       if (this.anims.exists(key)) return;
       this.anims.create({
         key,
@@ -714,28 +783,29 @@ export class CampusScene extends Phaser.Scene {
       .setBlendMode(Phaser.BlendModes.MULTIPLY)
       .setAlpha(0);
 
-    // Warm light anchored to the actual painted sources on the hall:
-    // a candle on each porch post base, and the lit window right of the
-    // door. (Positions read off the background art — keep them in sync if
-    // the painting changes.)
+    // Warm light anchored to the placed lantern sprites and the founding
+    // hall's painted windows (positions from campusLayout).
     this.nightLights = this.add.container(0, 0).setAlpha(0);
-    const candles = [{ x: 625, y: 388 }, { x: 761, y: 416 }];
-    for (const p of candles) {
-      const halo = this.add.circle(p.x, p.y, 14, 0xff9840, 0.18).setBlendMode(Phaser.BlendModes.ADD);
-      const core = this.add.circle(p.x, p.y, 5, 0xffd080, 0.50).setBlendMode(Phaser.BlendModes.ADD);
-      // Faint pool of light on the flagstones beneath the candle.
-      const pool = this.add.ellipse(p.x, p.y + 26, 52, 18, 0xff9840, 0.10).setBlendMode(Phaser.BlendModes.ADD);
+    for (const p of LANTERNS) {
+      // The flame sits near the top of the 16×24 lantern drawn at 2×.
+      const fx = p.x, fy = p.y - 34;
+      const halo = this.add.circle(fx, fy, 14, 0xff9840, 0.18).setBlendMode(Phaser.BlendModes.ADD);
+      const core = this.add.circle(fx, fy, 5, 0xffd080, 0.50).setBlendMode(Phaser.BlendModes.ADD);
+      // Faint pool of light on the flagstones beneath the lantern.
+      const pool = this.add.ellipse(p.x, p.y + 4, 52, 18, 0xff9840, 0.10).setBlendMode(Phaser.BlendModes.ADD);
       this.nightLights.add([halo, core, pool]);
       this.tweens.add({
         targets: [halo, core], alpha: '-=0.08', scaleX: 1.25, scaleY: 1.25,
         duration: 380 + Math.random() * 240, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
       });
     }
-    const windowGlow = this.add.ellipse(862, 375, 34, 46, 0xffb050, 0.28).setBlendMode(Phaser.BlendModes.ADD);
-    this.nightLights.add(windowGlow);
-    this.tweens.add({
-      targets: windowGlow, alpha: 0.38, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
-    });
+    for (const w of WINDOW_GLOWS) {
+      const windowGlow = this.add.ellipse(w.x, w.y, w.w, w.h, 0xffb050, 0.28).setBlendMode(Phaser.BlendModes.ADD);
+      this.nightLights.add(windowGlow);
+      this.tweens.add({
+        targets: windowGlow, alpha: 0.38, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      });
+    }
   }
 
   // Each month ends in a short night: dusk falls around day 24, full dark
@@ -753,6 +823,12 @@ export class CampusScene extends Phaser.Scene {
     const winter = monthOfYear === 12 || monthOfYear === 1;
     const winterTarget = winter ? 0.14 : 0;
     this.setSnowing(winter);
+
+    // Lanterns light up as dusk falls.
+    const lanternTex = lightTarget > 0.4 ? 'prop_lantern_on' : 'prop_lantern_off';
+    for (const lantern of this.lanternSprites) {
+      if (lantern.active && lantern.texture.key !== lanternTex) lantern.setTexture(lanternTex);
+    }
 
     if (immediate) {
       this.duskOverlay.setAlpha(duskTarget);
@@ -838,14 +914,13 @@ export class CampusScene extends Phaser.Scene {
 
     this.activeWorkStation = this.add.image(x, y + 10, 'workstation_research')
       .setOrigin(0.5, 0.68)
-      .setScale(0.36)
+      .setScale(2)
       .setAlpha(0.97);
 
     this.activeWorkTitle = this.add.text(x, y - 94, '', {
       fontSize: '16px',
       color: '#e8d5b0',
-      fontFamily: 'Georgia, serif',
-      fontStyle: 'italic',
+      fontFamily: DISPLAY_FONT,
       stroke: '#1a0d06',
       strokeThickness: 3,
     }).setOrigin(0.5);
@@ -864,35 +939,25 @@ export class CampusScene extends Phaser.Scene {
   }
 
   private buildAnchoredAmbientArt() {
-    const treeCanopy = this.add.image(260, 377, 'ambient_tree_canopy_overlay')
-      .setOrigin(0.25, 0.7)
-      .setScale(0.24)
-      .setAlpha(0.24);
-    const prayerFlags = this.add.image(500, 232, 'ambient_prayer_flags_overlay')
-      .setOrigin(0.5)
-      .setScale(0.19)
-      .setAlpha(0.46);
-
-    this.ambientLayer.add([treeCanopy, prayerFlags]);
-    this.tweens.add({
-      targets: treeCanopy,
-      x: treeCanopy.x + 2,
-      angle: 0.25,
-      duration: 3100,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
+    // Drifting pixel clouds above the mountain horizon.
+    const clouds: Array<[string, number, number, number]> = [
+      ['cloud_px_a', 180, 96, 0.5],   // [tex, x, y, alpha]
+      ['cloud_px_b', 520, 150, 0.38],
+      ['cloud_px_a', 950, 120, 0.42],
+    ];
+    clouds.forEach(([tex, x, y, alpha], i) => {
+      if (!this.textures.exists(tex)) return;
+      const cloud = this.add.image(x, y, tex).setScale(2).setAlpha(alpha);
+      this.ambientLayer.add(cloud);
+      this.tweens.add({
+        targets: cloud,
+        x: x + 60 + i * 24,
+        duration: 36000 + i * 9000,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
     });
-    this.tweens.add({
-      targets: prayerFlags,
-      y: prayerFlags.y + 1.5,
-      angle: -0.35,
-      duration: 1650,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
-
   }
 
   private buildDustMotes() {
@@ -938,10 +1003,12 @@ export class CampusScene extends Phaser.Scene {
   }
 
   private spawnSkyBirds() {
+    // Birds cross the full mountain sky, above the rooflines.
     const groupSize = 1 + Math.floor(Math.random() * 3);
-    const startX = 160;
-    const endX = 470 + Math.random() * 70;
-    const startY = 118 + Math.random() * 68;
+    const leftToRight = Math.random() < 0.5;
+    const startX = leftToRight ? -40 : 1320;
+    const endX = leftToRight ? 1320 : -40;
+    const startY = 70 + Math.random() * 110;
     const canFly = this.textures.exists('bird_sheet') && this.anims.exists('bird_fly');
 
     for (let i = 0; i < groupSize; i++) {
@@ -952,7 +1019,8 @@ export class CampusScene extends Phaser.Scene {
         : this.add.image(x, y, 'ambient_birds_sheet');
       bird.setOrigin(0.5)
         .setScale(0.16 + Math.random() * 0.08)
-        .setAlpha(0.24);
+        .setAlpha(0.24)
+        .setFlipX(!leftToRight);
       if (canFly) {
         (bird as Phaser.GameObjects.Sprite).play({ key: 'bird_fly', delay: Math.random() * 300 });
       }
@@ -963,7 +1031,7 @@ export class CampusScene extends Phaser.Scene {
         x: endX,
         y: bird.y - 12 + Math.random() * 10,
         alpha: 0.18,
-        duration: 9500 + Math.random() * 3200,
+        duration: 10500 + Math.random() * 4200,
         ease: 'Sine.easeInOut',
         onComplete: () => bird.destroy(),
       });
@@ -1149,8 +1217,8 @@ export class CampusScene extends Phaser.Scene {
     for (let i = 0; i < 14; i++) {
       const angle = (i / 14) * Math.PI * 2 + Math.random() * 0.4;
       const dist = 50 + Math.random() * 70;
-      const spark = this.add.image(x, y - 20, 'fx_gold_sparkle')
-        .setScale(0.2 + Math.random() * 0.2)
+      const spark = this.add.image(x, y - 20, 'fx_gold_sparkle', 1 + Math.floor(Math.random() * 2))
+        .setScale(1.2 + Math.random() * 1.2)
         .setAlpha(0.9)
         .setDepth(8)
         .setBlendMode(Phaser.BlendModes.ADD);
@@ -1374,16 +1442,17 @@ export class CampusScene extends Phaser.Scene {
   // the manuscript center (refinement) — so the motion reads as part of the
   // desk rather than detached glows.
   private spawnStageSpark(stage: StageKey) {
-    const anchors: Record<StageKey, { dx: number; dy: number; tex: string; scale: number; alpha: number }> = {
-      research:   { dx: -34, dy: -34, tex: 'fx_gold_sparkle', scale: 0.10, alpha: 0.30 },
-      drafting:   { dx:  22, dy: -26, tex: 'fx_ink_splatter', scale: 0.13, alpha: 0.30 },
-      refinement: { dx:   2, dy: -34, tex: 'fx_gold_sparkle', scale: 0.16, alpha: 0.45 },
+    const anchors: Record<StageKey, { dx: number; dy: number; tex: string; frame: number; scale: number; alpha: number }> = {
+      research:   { dx: -34, dy: -34, tex: 'fx_gold_sparkle', frame: 1, scale: 0.6, alpha: 0.30 },
+      drafting:   { dx:  22, dy: -26, tex: 'fx_ink_splatter', frame: 2, scale: 0.65, alpha: 0.30 },
+      refinement: { dx:   2, dy: -34, tex: 'fx_gold_sparkle', frame: 2, scale: 1.0, alpha: 0.45 },
     };
     const a = anchors[stage];
     const spark = this.add.image(
       ACTIVE_WORK_AREA.x + a.dx + (Math.random() - 0.5) * 14,
       ACTIVE_WORK_AREA.y + a.dy + (Math.random() - 0.5) * 8,
       a.tex,
+      a.frame,
     )
       .setScale(a.scale + Math.random() * 0.04)
       .setAlpha(a.alpha)
@@ -1863,7 +1932,7 @@ export class CampusScene extends Phaser.Scene {
     // ── Left cluster ───────────────────────────────────────────────
     // Institution name (anchored left), then Day positioned right of it with a gap.
     const instBtn = this.add.text(20, cy, this.formatInstitutionLabel(), {
-      fontSize: '15px', color: '#e8d5b0', fontFamily: 'Georgia, serif',
+      fontSize: '16px', color: '#e8d5b0', fontFamily: DISPLAY_FONT,
     }).setOrigin(0, 0.5);
     this.wireButton(instBtn, {
       hoverColor: '#d4a855', idleColor: '#e8d5b0',
@@ -1939,7 +2008,7 @@ export class CampusScene extends Phaser.Scene {
 
     this.treasuryIndicator = this.add.image(
       this.treasuryLabel.getLeftCenter().x - innerGap, cy, `indicator_${state}`,
-    ).setOrigin(1, 0.5).setScale(0.7);
+    ).setOrigin(1, 0.5).setScale(2);
     this.wireButton(this.treasuryIndicator, {
       tooltip: 'Treasury health',
       onClick: () => this.treasuryPanel.show(),
@@ -2349,19 +2418,19 @@ export class CampusScene extends Phaser.Scene {
     const cx  = width / 2;
     const gap = 68;
 
-    this.btnPause = this.add.image(cx - gap, cy, 'btn_pause').setScale(0.72);
+    this.btnPause = this.add.image(cx - gap, cy, 'btn_pause').setScale(2);
     this.wireButton(this.btnPause, { tooltip: 'Pause time', onClick: () => this.applySpeed('paused') });
 
-    this.btnPlay = this.add.image(cx, cy, 'btn_play_active').setScale(0.72);
+    this.btnPlay = this.add.image(cx, cy, 'btn_play_active').setScale(2);
     this.wireButton(this.btnPlay, { tooltip: 'Normal speed', onClick: () => this.applySpeed('normal') });
 
-    this.btnFast = this.add.image(cx + gap, cy, 'btn_fast').setScale(0.72);
+    this.btnFast = this.add.image(cx + gap, cy, 'btn_fast').setScale(2);
     this.wireButton(this.btnFast, { tooltip: 'Fast forward', onClick: () => this.applySpeed('fast') });
 
     this.refreshSpeedButtons();
 
     this.scholarsBtn = this.add.text(24, cy, 'Scholars', {
-      fontSize: '13px', color: '#c8a87a', fontFamily: 'Georgia, serif',
+      fontSize: '14px', color: '#c8a87a', fontFamily: DISPLAY_FONT,
       padding: { x: 13, y: 7 }, backgroundColor: '#2d1a0e',
     }).setOrigin(0, 0.5);
     this.wireButton(this.scholarsBtn, {
@@ -2371,7 +2440,7 @@ export class CampusScene extends Phaser.Scene {
     });
 
     this.newWorkBtn = this.add.text(width - 24, cy, 'New Work', {
-      fontSize: '13px', color: '#c8a87a', fontFamily: 'Georgia, serif',
+      fontSize: '14px', color: '#c8a87a', fontFamily: DISPLAY_FONT,
       padding: { x: 13, y: 7 }, backgroundColor: '#2d1a0e',
     }).setOrigin(1, 0.5).setInteractive({ useHandCursor: true })
       .on('pointerover', () => {

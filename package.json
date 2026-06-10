@@ -9,6 +9,8 @@
     "preview": "vite preview",
     "assets:audit": "node scripts/audit-assets.mjs",
     "assets:links": "node scripts/verify-asset-links.mjs",
+    "assets:gen": "node scripts/gen-pixel-assets.mjs",
+    "assets:ui": "node scripts/draw-pixel-ui.mjs",
     "shots": "node scripts/screenshot.mjs",
     "playtest": "node scripts/playtest.mjs"
   },

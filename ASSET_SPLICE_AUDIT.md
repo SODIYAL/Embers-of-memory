@@ -1,5 +1,11 @@
 # Asset Splice Audit
 
+> **Superseded (June 2026):** the game moved to a fully composed pixel-art
+> presentation. The painterly art this audit covers now lives in
+> `art-src/retired/`; bad crops it flagged were replaced by deterministic
+> generators (`scripts/gen-pixel-assets.mjs`, `scripts/draw-pixel-ui.mjs`).
+> Kept for historical context only.
+
 Generated contact sheets are in `asset-audit-contact-sheets/`.
 
 ## Summary

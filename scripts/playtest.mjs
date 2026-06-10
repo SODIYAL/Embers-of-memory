@@ -14,8 +14,8 @@ import { extname, join } from 'node:path';
 const outDir = process.argv[2] ?? 'screenshots';
 mkdirSync(outDir, { recursive: true });
 
-const chromium = (await import('@sparticuz/chromium')).default;
 const puppeteer = await import('puppeteer-core');
+const { resolveBrowser } = await import('./resolve-browser.mjs');
 
 const MIME = {
   '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
@@ -32,10 +32,10 @@ const server = createServer(async (req, res) => {
 await new Promise(r => server.listen(0, r));
 const port = server.address().port;
 
-chromium.setGraphicsMode = true;
+const { executablePath, args } = await resolveBrowser();
 const browser = await puppeteer.launch({
-  args: [...chromium.args, '--enable-unsafe-swiftshader'],
-  executablePath: await chromium.executablePath(),
+  args,
+  executablePath,
   headless: 'shell',
   defaultViewport: { width: 1280, height: 720 },
 });
