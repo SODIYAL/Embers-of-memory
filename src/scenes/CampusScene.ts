@@ -191,6 +191,7 @@ export class CampusScene extends Phaser.Scene {
   private activeWorkTimer?: Phaser.Time.TimerEvent;
   private birdTimer?: Phaser.Time.TimerEvent;
   private emoteTimer?: Phaser.Time.TimerEvent;
+  private idleChatTimer?: Phaser.Time.TimerEvent;
 
   // Day/night + seasons
   private duskOverlay!: Phaser.GameObjects.Rectangle;
@@ -220,6 +221,7 @@ export class CampusScene extends Phaser.Scene {
   private stanceBtn!: Phaser.GameObjects.Text;
 
   // Info strips beneath the top bar
+  private goalStrip!: Phaser.GameObjects.Container;
   private commissionStrip!: Phaser.GameObjects.Container;
   private releasesStrip!: Phaser.GameObjects.Container;
   private eventModal!: DecisionModal;
@@ -277,6 +279,13 @@ export class CampusScene extends Phaser.Scene {
     this.buildBottomBar(width, height);
     this.buildKeyboardShortcuts();
 
+    // Off-project social texture — idle scholars chat now and then.
+    this.idleChatTimer = this.time.addEvent({
+      delay: 9000,
+      loop: true,
+      callback: () => this.emitIdleChatter(),
+    });
+
     Game.start();
     this.projectSystem.init();
     this.recruitment.init();
@@ -306,6 +315,16 @@ export class CampusScene extends Phaser.Scene {
       this.updateDayNight(day);
     };
     const onTreasury  = ({ amount }: { amount: number }) => this.updateTreasuryDisplay(amount);
+    const onMonthLedger = (l: EventPayloads[typeof GameEvents.MONTH_LEDGER]) => {
+      const income   = l.backlist + l.stipends;
+      const expenses = l.salaries + l.upkeep + l.ops;
+      const sign = l.net >= 0 ? '+' : '−';
+      this.queueJournalNote(
+        `The ledger for month ${l.month}: income ${income} gold` +
+        (l.stipends > 0 ? ` (${l.stipends} from patrons)` : '') +
+        `, expenses ${expenses} gold. Net ${sign}${Math.abs(l.net)} — ${l.treasury} gold remains.`,
+      );
+    };
     const onStarted   = ({ project }: { project: Project }) => this.onProjectStarted(project);
     const onProgress  = ({ progress }: { progress: number }) => {
       this.updateProgressBar(progress);
@@ -487,6 +506,7 @@ export class CampusScene extends Phaser.Scene {
 
     Events.on(GameEvents.DAY_PASSED,        onDay);
     Events.on(GameEvents.TREASURY_CHANGED,  onTreasury);
+    Events.on(GameEvents.MONTH_LEDGER,      onMonthLedger);
     Events.on(GameEvents.PROJECT_STARTED,   onStarted);
     Events.on(GameEvents.PROJECT_PROGRESS,  onProgress);
     Events.on(GameEvents.MID_PROJECT_EVENT, onMidEvent);
@@ -543,6 +563,7 @@ export class CampusScene extends Phaser.Scene {
     this.events.once('shutdown', () => {
       Events.off(GameEvents.DAY_PASSED,        onDay);
       Events.off(GameEvents.TREASURY_CHANGED,  onTreasury);
+      Events.off(GameEvents.MONTH_LEDGER,      onMonthLedger);
       Events.off(GameEvents.PROJECT_STARTED,   onStarted);
       Events.off(GameEvents.PROJECT_PROGRESS,  onProgress);
       Events.off(GameEvents.MID_PROJECT_EVENT, onMidEvent);
@@ -607,6 +628,7 @@ export class CampusScene extends Phaser.Scene {
       this.activeWorkTimer?.remove(false);
       this.birdTimer?.remove(false);
       this.emoteTimer?.remove(false);
+      this.idleChatTimer?.remove(false);
       this.snowTimer?.remove(false);
       this.snowTimer = undefined;
       this.snowing = false;
@@ -657,7 +679,6 @@ export class CampusScene extends Phaser.Scene {
     make('student_idle', 'student_idle', 4, 5, -1, true);
     make('student_walk', 'student_walk', 4, 9, -1);
     make('bird_fly',     'bird_sheet',   6, 9, -1);
-    make('flame_flicker','flame_sheet',  4, 8, -1, true);
   }
 
   // Space toggles pause, 1/2 select normal/fast. Skipped while the player is
@@ -693,27 +714,28 @@ export class CampusScene extends Phaser.Scene {
       .setBlendMode(Phaser.BlendModes.MULTIPLY)
       .setAlpha(0);
 
-    // Warm light anchored to the hall's lit windows in the painting.
+    // Warm light anchored to the actual painted sources on the hall:
+    // a candle on each porch post base, and the lit window right of the
+    // door. (Positions read off the background art — keep them in sync if
+    // the painting changes.)
     this.nightLights = this.add.container(0, 0).setAlpha(0);
-    const windowGlows = [
-      { x: 584, y: 328 }, { x: 636, y: 326 }, { x: 688, y: 328 }, { x: 740, y: 330 },
-    ];
-    for (const p of windowGlows) {
-      const glow = this.add.circle(p.x, p.y, 9, 0xffa84a, 0.40).setBlendMode(Phaser.BlendModes.ADD);
-      this.nightLights.add(glow);
+    const candles = [{ x: 625, y: 388 }, { x: 761, y: 416 }];
+    for (const p of candles) {
+      const halo = this.add.circle(p.x, p.y, 14, 0xff9840, 0.18).setBlendMode(Phaser.BlendModes.ADD);
+      const core = this.add.circle(p.x, p.y, 5, 0xffd080, 0.50).setBlendMode(Phaser.BlendModes.ADD);
+      // Faint pool of light on the flagstones beneath the candle.
+      const pool = this.add.ellipse(p.x, p.y + 26, 52, 18, 0xff9840, 0.10).setBlendMode(Phaser.BlendModes.ADD);
+      this.nightLights.add([halo, core, pool]);
       this.tweens.add({
-        targets: glow, alpha: 0.62, scaleX: 1.18, scaleY: 1.18,
-        duration: 1600 + Math.random() * 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+        targets: [halo, core], alpha: '-=0.08', scaleX: 1.25, scaleY: 1.25,
+        duration: 380 + Math.random() * 240, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
       });
     }
-    if (this.textures.exists('flame_sheet')) {
-      for (const p of [{ x: 610, y: 352 }, { x: 712, y: 352 }]) {
-        const flame = this.add.sprite(p.x, p.y, 'flame_sheet')
-          .setScale(1.6).setAlpha(0.85).setBlendMode(Phaser.BlendModes.ADD);
-        flame.play({ key: 'flame_flicker', delay: Math.random() * 400 });
-        this.nightLights.add(flame);
-      }
-    }
+    const windowGlow = this.add.ellipse(862, 375, 34, 46, 0xffb050, 0.28).setBlendMode(Phaser.BlendModes.ADD);
+    this.nightLights.add(windowGlow);
+    this.tweens.add({
+      targets: windowGlow, alpha: 0.38, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    });
   }
 
   // Each month ends in a short night: dusk falls around day 24, full dark
@@ -763,7 +785,7 @@ export class CampusScene extends Phaser.Scene {
 
   private spawnSnowflake() {
     const x = Math.random() * 1280;
-    const flake = this.add.circle(x, -6, 1.2 + Math.random() * 1.4, 0xf4f6fb, 0.35 + Math.random() * 0.35);
+    const flake = this.add.circle(x, -6, 1.5 + Math.random() * 1.8, 0xf4f6fb, 0.45 + Math.random() * 0.35);
     // Drawn into the ambient layer so flakes stay under the UI chrome.
     this.ambientLayer.add(flake);
     this.tweens.add({
@@ -1058,6 +1080,28 @@ export class CampusScene extends Phaser.Scene {
         });
       },
     });
+  }
+
+  // Idle scholars near each other occasionally exchange a word, colored by
+  // their chemistry — keeps the courtyard alive between projects and
+  // quietly teaches who works well with whom.
+  private emitIdleChatter() {
+    if (Game.state.activeProject) return; // work emotes cover project time
+    if (Math.random() < 0.45) return;
+    const idle = [...this.actors.entries()].filter(([, a]) => a.mode === 'idle' && !a.walkTween);
+    for (let i = 0; i < idle.length; i++) {
+      for (let j = i + 1; j < idle.length; j++) {
+        const [idA, a] = idle[i];
+        const [idB, b] = idle[j];
+        const close = Phaser.Math.Distance.Between(
+          a.container.x, a.container.y, b.container.x, b.container.y,
+        ) < 240;
+        if (close) {
+          this.emoteChat(idA, idB);
+          return;
+        }
+      }
+    }
   }
 
   // React animation on one scholar (skill-ups, mid-events, celebrations).
@@ -1983,18 +2027,62 @@ export class CampusScene extends Phaser.Scene {
   private static readonly CARD_GAP = 8;
 
   private buildInfoStrips(_width: number) {
+    this.goalStrip       = this.add.container(CampusScene.CARD_X, CampusScene.CARD_Y_START).setDepth(5);
     this.commissionStrip = this.add.container(CampusScene.CARD_X, CampusScene.CARD_Y_START).setDepth(5);
     this.releasesStrip   = this.add.container(CampusScene.CARD_X, CampusScene.CARD_Y_START).setDepth(5);
     this.refreshInfoStrips();
   }
 
-  // Tear down + rebuild both cards. Sales tick at most once a day per work,
+  // The next structural goal for the institution, derived fresh from state
+  // each refresh. Returns null once the player has seen it all — free play.
+  private currentGoal(): { title: string; detail: string } | null {
+    const s = Game.state;
+    if (s.completedWorks.length < 1) {
+      return { title: 'Release your first work',
+               detail: 'Begin a New Work and guide it through all three stages.' };
+    }
+    if (s.scholars.length < 3) {
+      return { title: 'Grow the roster',
+               detail: 'Recruit from the Scholars panel — candidates take a month to arrive.' };
+    }
+    if (s.prestige < 50) {
+      return { title: 'Reach 50 prestige',
+               detail: `Quality works build renown (now ${s.prestige}). Patrons notice at 50.` };
+    }
+    if (s.tier < 2) {
+      return { title: 'Become an Academy',
+               detail: 'Hold 300 gold and six scholars. New zones will unlock.' };
+    }
+    if (s.departments.length === 0) {
+      return { title: 'Found a department',
+               detail: 'Three scholars sharing a discipline can work under a head.' };
+    }
+    if (s.tier < 3) {
+      return { title: 'Become a University',
+               detail: `Prestige 200 (now ${s.prestige}), 800 gold, twelve scholars.` };
+    }
+    return null;
+  }
+
+  // Tear down + rebuild the cards. Sales tick at most once a day per work,
   // so this is cheap and keeps state-vs-layout logic together.
   private refreshInfoStrips() {
+    this.goalStrip.removeAll(true);
     this.commissionStrip.removeAll(true);
     this.releasesStrip.removeAll(true);
 
     let y = CampusScene.CARD_Y_START;
+
+    // 0. Goal card — steady guidance at the top of the stack
+    const goal = this.currentGoal();
+    if (goal) {
+      const h = this.populateGoalCard(goal);
+      this.goalStrip.setY(y);
+      y += h + CampusScene.CARD_GAP;
+      this.goalStrip.setVisible(true);
+    } else {
+      this.goalStrip.setVisible(false);
+    }
 
     // 1. Commission card
     const active  = Game.state.activeCommission;
@@ -2017,6 +2105,37 @@ export class CampusScene extends Phaser.Scene {
     } else {
       this.releasesStrip.setVisible(false);
     }
+  }
+
+  // Compact "what to aim for next" card. Same visual language as the
+  // commission card; returns its height for stacking.
+  private populateGoalCard(goal: { title: string; detail: string }): number {
+    const w = CampusScene.CARD_W;
+    const padX = 12;
+    const padY = 8;
+    const h = padY * 2 + 44;
+
+    const bg = this.add.rectangle(0, 0, w, h, BAR_COLOR, 0.92)
+      .setOrigin(0, 0)
+      .setStrokeStyle(1, 0x3a2818, 0.9);
+    const accent = this.add.rectangle(0, 0, 3, h, 0x8ab87a, 0.9).setOrigin(0, 0);
+
+    const tag = this.add.text(padX + 6, padY, 'GOAL', {
+      fontSize: '10px', color: '#8ab87a', fontFamily: 'Georgia, serif',
+    }).setOrigin(0, 0);
+    tag.setLetterSpacing(2);
+
+    const title = this.add.text(padX + 52, padY - 1, goal.title, {
+      fontSize: '13px', color: '#e8d5b0', fontFamily: 'Georgia, serif',
+    }).setOrigin(0, 0);
+
+    const detail = this.add.text(padX + 6, padY + 18, goal.detail, {
+      fontSize: '11px', color: '#8a6848', fontFamily: 'Georgia, serif', fontStyle: 'italic',
+      wordWrap: { width: w - padX * 2 - 12 },
+    }).setOrigin(0, 0);
+
+    this.goalStrip.add([bg, accent, tag, title, detail]);
+    return h;
   }
 
   // Returns the card's actual height so the next card below can stack.
@@ -2353,11 +2472,24 @@ export class CampusScene extends Phaser.Scene {
     this.refreshSpeedButtons();
   }
 
+  private pausedHint?: Phaser.GameObjects.Text;
+
   private refreshSpeedButtons() {
     const s = Game.time.speed;
     this.btnPause.setTexture(s === 'paused' ? 'btn_pause_active' : 'btn_pause');
     this.btnPlay.setTexture(s === 'normal'  ? 'btn_play_active'  : 'btn_play');
     this.btnFast.setTexture(s === 'fast'    ? 'btn_fast_active'  : 'btn_fast');
+
+    // Quiet hint above the speed buttons while time is stopped — pairs with
+    // the Space shortcut so a paused game never reads as a frozen one.
+    if (!this.pausedHint) {
+      const { width, height } = this.scale;
+      this.pausedHint = this.add.text(width / 2, height - BAR_H - 14, 'Paused  ·  Space to resume', {
+        fontSize: '11px', color: '#c8a87a', fontFamily: 'Georgia, serif', fontStyle: 'italic',
+        stroke: '#0d0704', strokeThickness: 3,
+      }).setOrigin(0.5).setDepth(15).setVisible(false);
+    }
+    this.pausedHint.setVisible(s === 'paused');
   }
 
   // ── Project panel ─────────────────────────────────────────────────

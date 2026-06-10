@@ -18,6 +18,7 @@ export const GameEvents = {
   WORK_RELEASED:       'work:released',
   TREASURY_CHANGED:    'economy:treasury_changed',
   TREASURY_LOW:        'economy:treasury_low',
+  MONTH_LEDGER:        'economy:month_ledger',
   BANKRUPTCY:          'economy:bankruptcy',
   PATRON_GRANTED:      'economy:patron_granted',
   SCHOLAR_HIRED:       'scholar:hired',
@@ -91,6 +92,16 @@ export interface EventPayloads {
   [GameEvents.PROJECT_CANCELLED]: { project: Project; refund: number };
   [GameEvents.WORK_RELEASED]:     { work: Work };
   [GameEvents.TREASURY_CHANGED]:  { amount: number };
+  [GameEvents.MONTH_LEDGER]: {
+    month: number;
+    backlist: number;
+    stipends: number;
+    salaries: number;
+    upkeep: number;
+    ops: number;
+    net: number;
+    treasury: number;
+  };
   [GameEvents.TREASURY_LOW]:      { amount: number; tier: 'strained' | 'critical' };
   [GameEvents.BANKRUPTCY]:        { amount: number; monthsNegative: number };
   [GameEvents.PATRON_GRANTED]:    { amount: number; flavor: string };

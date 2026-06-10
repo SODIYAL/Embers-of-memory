@@ -2,6 +2,8 @@ import Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
 import { MenuScene } from './scenes/MenuScene';
 import { CampusScene } from './scenes/CampusScene';
+import { Game } from './game/GameManager';
+import { Events, GameEvents } from './game/EventBus';
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.WEBGL,
@@ -19,3 +21,8 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 new Phaser.Game(config);
+
+// Dev/tooling hook — lets debug consoles and the screenshot harness
+// (scripts/screenshot.mjs) inspect and drive game state directly.
+declare global { interface Window { __embers?: unknown } }
+window.__embers = { Game, Events, GameEvents };

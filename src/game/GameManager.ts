@@ -190,7 +190,7 @@ export class GameManager {
     this.state.treasury += backlist;
 
     // Patron stipends, commissions offered, grants claimed, patron patience.
-    this.economy.tickMonth();
+    const { stipendsPaid } = this.economy.tickMonth();
 
     // ── Expenses ──
     const salaries = this.economy.monthlySalaries();
@@ -199,6 +199,16 @@ export class GameManager {
     this.state.treasury -= salaries + upkeep + ops;
 
     Events.emit(GameEvents.TREASURY_CHANGED, { amount: this.state.treasury });
+    Events.emit(GameEvents.MONTH_LEDGER, {
+      month:    Math.floor((this.state.day - 1) / 30) + 1,
+      backlist,
+      stipends: stipendsPaid,
+      salaries,
+      upkeep,
+      ops,
+      net:      backlist + stipendsPaid - salaries - upkeep - ops,
+      treasury: this.state.treasury,
+    });
 
     // ── Post-settlement checks ──
     this.checkTreasuryWarning();

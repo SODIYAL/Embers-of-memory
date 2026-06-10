@@ -137,10 +137,8 @@ export class BootScene extends Phaser.Scene {
     for (const name of ['birds_sheet', 'prayer_flags_overlay', 'tree_canopy_overlay']) {
       this.load.image(`ambient_${name}`, `/assets/ambient/ambient_${name}.png`);
     }
-    // The bird sheet again as an animatable spritesheet (6 flap frames),
-    // and the candle flame strip (4 flicker frames) for night lanterns.
+    // The bird sheet again as an animatable spritesheet (6 flap frames).
     this.load.spritesheet('bird_sheet', '/assets/ambient/ambient_birds_sheet.png', { frameWidth: 85, frameHeight: 75 });
-    this.load.spritesheet('flame_sheet', '/assets/fx/fx_candle_flame.png', { frameWidth: 12, frameHeight: 12 });
     for (const stage of ['research', 'drafting', 'refinement']) {
       this.load.image(`workstation_${stage}`, `/assets/workstations/workstation_${stage}.png`);
     }
