@@ -16,6 +16,8 @@ export class MenuScene extends Phaser.Scene {
 
     // Initialize the central audio service. Future scenes share this instance.
     Audio.init(this);
+    // Ambience starts here and continues into the campus (same key).
+    Audio.playMusic('music_campus', { fadeMs: 2500 });
 
     this.buildTitleAtmosphere(width, height, cx);
 

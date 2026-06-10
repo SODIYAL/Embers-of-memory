@@ -137,6 +137,8 @@ export class BootScene extends Phaser.Scene {
     for (const name of ['birds_sheet', 'prayer_flags_overlay', 'tree_canopy_overlay']) {
       this.load.image(`ambient_${name}`, `/assets/ambient/ambient_${name}.png`);
     }
+    // The bird sheet again as an animatable spritesheet (6 flap frames).
+    this.load.spritesheet('bird_sheet', '/assets/ambient/ambient_birds_sheet.png', { frameWidth: 85, frameHeight: 75 });
     for (const stage of ['research', 'drafting', 'refinement']) {
       this.load.image(`workstation_${stage}`, `/assets/workstations/workstation_${stage}.png`);
     }
@@ -192,18 +194,10 @@ export class BootScene extends Phaser.Scene {
       this.load.audio(name, `/assets/audio/sfx/${name}.wav`);
     }
 
-    // Music — looped ambient tracks. These files are optional; the Audio
-    // service no-ops on missing keys, so play() is safe even if the asset
-    // hasn't been authored yet. Drop a real file at the path below to wire
-    // it up.
-    //   public/assets/audio/music/campus_ambient.mp3
-    //   public/assets/audio/music/menu_theme.mp3
-    // We use `load.audio` with a `.silent` skip via a "file not found" 404
-    // tolerance: Phaser logs a warning but doesn't crash. If you'd rather
-    // not see the warning, remove these two lines until the assets exist.
-    // (Commented out for now to avoid 404s in the console.)
-    // this.load.audio('music_menu',    '/assets/audio/music/menu_theme.mp3');
-    // this.load.audio('music_campus',  '/assets/audio/music/campus_ambient.mp3');
+    // Music — looped mountain-wind ambience, synthesized by
+    // scripts/generate-ambience.mjs. Starts on the menu and carries into
+    // the campus (same key, so the cross-fade no-ops between scenes).
+    this.load.audio('music_campus', '/assets/audio/music/campus_ambient.mp3');
   }
 
   create() {

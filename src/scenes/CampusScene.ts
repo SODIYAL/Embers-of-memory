@@ -20,6 +20,7 @@ import { StageGateModal } from '../ui/modals/StageGateModal';
 import { STAGE_INFO, STAGE_ORDER } from '../models/Project';
 import { STAGE_AXES } from '../data/stageEmphasis';
 import { Audio } from '../game/Audio';
+import { getScore } from '../game/Chemistry';
 import { ScholarPanel } from '../ui/panels/ScholarPanel';
 import { DecisionModal } from '../ui/modals/DecisionModal';
 import { ReleaseReportModal } from '../ui/modals/ReleaseReportModal';
@@ -57,33 +58,39 @@ const TREASURY_HOVER: Record<string, string> = {
 const NAMED_SCHOLARS = ['yildiz', 'ossavi', 'meridian', 'vasara', 'harlow'] as const;
 type NamedId = typeof NAMED_SCHOLARS[number];
 
-// Approximate positions in the courtyard for the founders.
+// Ground anchor positions (feet) in the courtyard for the founders.
 const SCHOLAR_POS: Record<NamedId, { x: number; y: number }> = {
-  yildiz:   { x: 362, y: 432 },
-  ossavi:   { x: 492, y: 456 },
-  meridian: { x: 632, y: 444 },
-  vasara:   { x: 772, y: 458 },
-  harlow:   { x: 904, y: 436 },
+  yildiz:   { x: 362, y: 482 },
+  ossavi:   { x: 492, y: 506 },
+  meridian: { x: 632, y: 494 },
+  vasara:   { x: 772, y: 508 },
+  harlow:   { x: 904, y: 486 },
 };
 
 // Fallback positions for hires beyond the five founders.
 const HIRE_POS: Array<{ x: number; y: number }> = [
-  { x: 230, y: 444 }, { x: 1036, y: 444 },
-  { x: 290, y: 478 }, { x: 974,  y: 478 },
-  { x: 426, y: 488 }, { x: 838,  y: 488 },
+  { x: 250, y: 494 }, { x: 1026, y: 494 },
+  { x: 300, y: 528 }, { x: 964,  y: 528 },
+  { x: 426, y: 538 }, { x: 838,  y: 538 },
 ];
 
 const DUST_MOTE_BOUNDS = { x: 380, y: 250, w: 540, h: 250 };
-const WORK_SPARK_ORIGIN = { x: 640, y: 430 };
 const ACTIVE_WORK_AREA = { x: 640, y: 540 };
-const BIRD_FRAME = { w: 85, h: 76, count: 6 };
-const ACTIVE_WORK_SLOTS = [
-  { x: ACTIVE_WORK_AREA.x - 122, y: ACTIVE_WORK_AREA.y - 26 },
-  { x: ACTIVE_WORK_AREA.x + 122, y: ACTIVE_WORK_AREA.y - 26 },
-  { x: ACTIVE_WORK_AREA.x - 64,  y: ACTIVE_WORK_AREA.y + 54 },
-  { x: ACTIVE_WORK_AREA.x + 64,  y: ACTIVE_WORK_AREA.y + 54 },
-  { x: ACTIVE_WORK_AREA.x,       y: ACTIVE_WORK_AREA.y - 90 },
+// Courtyard rectangle idle scholars may wander inside.
+const WANDER_BOUNDS = { minX: 240, maxX: 1040, minY: 460, maxY: 620 };
+// Seats around the workstation. Lead takes seat 0. `flip` turns the sprite
+// toward the desk so the team reads as gathered around the work.
+const WORK_SEATS = [
+  { x: 548, y: 586, flip: false },
+  { x: 734, y: 586, flip: true },
+  { x: 592, y: 632, flip: false },
+  { x: 690, y: 632, flip: true },
+  { x: 641, y: 648, flip: false },
 ];
+// Pixel-art sprite frames are 32x48; drawn at 2x.
+const ACTOR_SCALE = 2;
+const WALK_SPEED = 0.085; // px per ms
+const GENERIC_VARIANTS = ['a', 'b', 'c'] as const;
 const STAGE_TINTS: Record<StageKey, number> = {
   research:   0xd4a855,
   drafting:   0xe8d5b0,
@@ -111,6 +118,24 @@ function prestigeTier(value: number): string {
   if (value >= 20)  return 'Regional renown';
   if (value >= 5)   return 'Local renown';
   return 'Unknown';
+}
+
+// One animated character in the courtyard. `mode` is the current behavior
+// state; `target` is where the actor was last sent so refreshes don't
+// restart walks already in flight.
+interface ScholarActor {
+  container: Phaser.GameObjects.Container;
+  sprite: Phaser.GameObjects.Sprite;
+  label: Phaser.GameObjects.Text;
+  zzz: Phaser.GameObjects.Text;
+  alert: Phaser.GameObjects.Text;
+  home: { x: number; y: number };
+  spriteSet: string;           // 'yildiz' … or 'generic_a' …
+  hasFullAnims: boolean;       // founders have walk/sit/react sheets
+  mode: 'idle' | 'working' | 'resting' | 'away';
+  target: { x: number; y: number };
+  walkTween?: Phaser.Tweens.Tween;
+  wanderEvent?: Phaser.Time.TimerEvent;
 }
 
 // ── Scene ──────────────────────────────────────────────────────────
@@ -154,10 +179,10 @@ export class CampusScene extends Phaser.Scene {
   // Active project tracking
   private activeScholarId: string | undefined;
 
-  // Campus portrait cards
-  private scholarCards  = new Map<string, Phaser.GameObjects.Container>();
-  private scholarTweens = new Map<string, Phaser.Tweens.Tween>();
-  private scholarHomePositions = new Map<string, { x: number; y: number }>();
+  // Campus actors — animated character sprites for every scholar
+  private actors = new Map<string, ScholarActor>();
+  private actorsLayer!: Phaser.GameObjects.Container;
+  private studentSprites: Phaser.GameObjects.Sprite[] = [];
   private ambientLayer!: Phaser.GameObjects.Container;
   private activeWorkLayer!: Phaser.GameObjects.Container;
   private activeWorkStation!: Phaser.GameObjects.Image;
@@ -165,7 +190,18 @@ export class CampusScene extends Phaser.Scene {
   private activeWorkStage!: Phaser.GameObjects.Text;
   private activeWorkTimer?: Phaser.Time.TimerEvent;
   private birdTimer?: Phaser.Time.TimerEvent;
-  private workSparkTimer?: Phaser.Time.TimerEvent;
+  private emoteTimer?: Phaser.Time.TimerEvent;
+  private idleChatTimer?: Phaser.Time.TimerEvent;
+
+  // Day/night + seasons
+  private duskOverlay!: Phaser.GameObjects.Rectangle;
+  private winterOverlay!: Phaser.GameObjects.Rectangle;
+  private nightLights!: Phaser.GameObjects.Container;
+  private snowTimer?: Phaser.Time.TimerEvent;
+  private snowing = false;
+
+  // Chronicle feed — non-blocking event notes stacked on the right edge
+  private chronicleCards: Phaser.GameObjects.Container[] = [];
 
   // Systems & UI
   private projectSystem!: ProjectSystem;
@@ -185,6 +221,7 @@ export class CampusScene extends Phaser.Scene {
   private stanceBtn!: Phaser.GameObjects.Text;
 
   // Info strips beneath the top bar
+  private goalStrip!: Phaser.GameObjects.Container;
   private commissionStrip!: Phaser.GameObjects.Container;
   private releasesStrip!: Phaser.GameObjects.Container;
   private eventModal!: DecisionModal;
@@ -225,9 +262,13 @@ export class CampusScene extends Phaser.Scene {
     this.add.image(cx, height / 2, 'bg_hall_day').setDisplaySize(width, height);
 
     // Campus life (drawn before bars so they appear under the chrome)
+    this.ensureCampusAnims();
     this.buildAmbientLayer();
     this.buildActiveWorkLayer();
     this.buildScholarSprites();
+    this.buildStudents();
+    this.buildMoodLayers(width, height);
+    this.updateDayNight(Game.state.day, true);
 
     // UI bars
     this.add.rectangle(cx, BAR_H / 2,          width, BAR_H, BAR_COLOR, BAR_ALPHA);
@@ -236,6 +277,14 @@ export class CampusScene extends Phaser.Scene {
     this.buildTopBar(width, height);
     this.buildInfoStrips(width);
     this.buildBottomBar(width, height);
+    this.buildKeyboardShortcuts();
+
+    // Off-project social texture — idle scholars chat now and then.
+    this.idleChatTimer = this.time.addEvent({
+      delay: 9000,
+      loop: true,
+      callback: () => this.emitIdleChatter(),
+    });
 
     Game.start();
     this.projectSystem.init();
@@ -260,16 +309,26 @@ export class CampusScene extends Phaser.Scene {
       this.dayText.setText(formatDay(day));
       // Refresh strips daily so sales chips track earnings + days-left.
       this.refreshInfoStrips();
-      // Resting scholars auto-wake when fully recovered — refresh portrait
-      // state daily so Zzz overlays disappear and bobs resume promptly.
+      // Resting scholars auto-wake when fully recovered — refresh actor
+      // state daily so Zzz overlays disappear and idling resumes promptly.
       this.refreshScholarSprites();
+      this.updateDayNight(day);
     };
     const onTreasury  = ({ amount }: { amount: number }) => this.updateTreasuryDisplay(amount);
+    const onMonthLedger = (l: EventPayloads[typeof GameEvents.MONTH_LEDGER]) => {
+      const income   = l.backlist + l.stipends;
+      const expenses = l.salaries + l.upkeep + l.ops;
+      const sign = l.net >= 0 ? '+' : '−';
+      this.queueJournalNote(
+        `The ledger for month ${l.month}: income ${income} gold` +
+        (l.stipends > 0 ? ` (${l.stipends} from patrons)` : '') +
+        `, expenses ${expenses} gold. Net ${sign}${Math.abs(l.net)} — ${l.treasury} gold remains.`,
+      );
+    };
     const onStarted   = ({ project }: { project: Project }) => this.onProjectStarted(project);
     const onProgress  = ({ progress }: { progress: number }) => {
       this.updateProgressBar(progress);
       this.spawnProgressPop();
-      this.spawnWorkSparkles(5);
     };
     const onMidEvent  = ({ scholarName, text, choice }: EventPayloads[typeof GameEvents.MID_PROJECT_EVENT]) =>
       this.showMidEvent(scholarName, text, choice);
@@ -289,6 +348,7 @@ export class CampusScene extends Phaser.Scene {
     const onSkillUp   = ({ scholarId, topic, newLevel }: { scholarId: string; topic: string; newLevel: number }) => {
       Audio.playSfx('quill_scratch', { volume: 0.6 });
       this.showSkillUpToast(scholarId, topic, newLevel);
+      this.playReact(scholarId);
     };
     const onHired     = () => {
       Audio.playSfx('coin_gain');
@@ -324,6 +384,8 @@ export class CampusScene extends Phaser.Scene {
     const onTierPromoted = ({ tierName }: EventPayloads[typeof GameEvents.TIER_PROMOTED]) => {
       this.refreshInstitutionLabel();
       this.queueJournalNote(`Word has spread. The institution is now known as a${tierName === 'Academy' ? 'n' : ''} ${tierName}.`);
+      // Students begin to appear in the courtyard from Academy tier.
+      if (this.studentSprites.length === 0) this.buildStudents();
     };
     const onZoneUnlocked = ({ zoneName }: EventPayloads[typeof GameEvents.ZONE_UNLOCKED]) => {
       this.showToast(`Zone unlocked: ${zoneName}`, '#d4a855');
@@ -444,6 +506,7 @@ export class CampusScene extends Phaser.Scene {
 
     Events.on(GameEvents.DAY_PASSED,        onDay);
     Events.on(GameEvents.TREASURY_CHANGED,  onTreasury);
+    Events.on(GameEvents.MONTH_LEDGER,      onMonthLedger);
     Events.on(GameEvents.PROJECT_STARTED,   onStarted);
     Events.on(GameEvents.PROJECT_PROGRESS,  onProgress);
     Events.on(GameEvents.MID_PROJECT_EVENT, onMidEvent);
@@ -500,6 +563,7 @@ export class CampusScene extends Phaser.Scene {
     this.events.once('shutdown', () => {
       Events.off(GameEvents.DAY_PASSED,        onDay);
       Events.off(GameEvents.TREASURY_CHANGED,  onTreasury);
+      Events.off(GameEvents.MONTH_LEDGER,      onMonthLedger);
       Events.off(GameEvents.PROJECT_STARTED,   onStarted);
       Events.off(GameEvents.PROJECT_PROGRESS,  onProgress);
       Events.off(GameEvents.MID_PROJECT_EVENT, onMidEvent);
@@ -563,7 +627,13 @@ export class CampusScene extends Phaser.Scene {
       this.stageGateModal.hide();
       this.activeWorkTimer?.remove(false);
       this.birdTimer?.remove(false);
-      this.workSparkTimer?.remove(false);
+      this.emoteTimer?.remove(false);
+      this.idleChatTimer?.remove(false);
+      this.snowTimer?.remove(false);
+      this.snowTimer = undefined;
+      this.snowing = false;
+      this.destroyActors();
+      this.chronicleCards = [];
       this.projectSystem.destroy();
       this.recruitment.destroy();
       this.milestones.destroy();
@@ -575,6 +645,157 @@ export class CampusScene extends Phaser.Scene {
     });
 
     this.cameras.main.fadeIn(600, 26, 15, 10);
+  }
+
+  // ── Animations & input ─────────────────────────────────────────────
+
+  // Register sprite animations once (anims are global across scene restarts).
+  // Pixel-art sheets get NEAREST filtering so the 2x scale stays crisp.
+  private ensureCampusAnims() {
+    const nearest = (Phaser.Textures as unknown as { FilterMode?: { NEAREST: number }; NEAREST?: number });
+    const filterValue = nearest.FilterMode?.NEAREST ?? nearest.NEAREST ?? 1;
+    const make = (key: string, tex: string, frames: number, rate: number, repeat: number, yoyo = false) => {
+      if (!this.textures.exists(tex)) return;
+      const t = this.textures.get(tex) as unknown as { setFilter?: (f: number) => void };
+      t.setFilter?.(filterValue);
+      if (this.anims.exists(key)) return;
+      this.anims.create({
+        key,
+        frames: this.anims.generateFrameNumbers(tex, { start: 0, end: frames - 1 }),
+        frameRate: rate,
+        repeat,
+        yoyo,
+      });
+    };
+    for (const id of NAMED_SCHOLARS) {
+      make(`${id}_idle`,  `scholar_${id}_idle`,  4, 5, -1, true);
+      make(`${id}_walk`,  `scholar_${id}_walk`,  4, 9, -1);
+      make(`${id}_sit`,   `scholar_${id}_sit`,   2, 2, -1, true);
+      make(`${id}_react`, `scholar_${id}_react`, 2, 6, 3, true);
+    }
+    for (const v of GENERIC_VARIANTS) {
+      make(`generic_${v}_idle`, `scholar_generic_${v}_idle`, 4, 5, -1, true);
+    }
+    make('student_idle', 'student_idle', 4, 5, -1, true);
+    make('student_walk', 'student_walk', 4, 9, -1);
+    make('bird_fly',     'bird_sheet',   6, 9, -1);
+  }
+
+  // Space toggles pause, 1/2 select normal/fast. Skipped while the player is
+  // typing into a DOM panel input or while a blocking modal is open.
+  private buildKeyboardShortcuts() {
+    const kb = this.input.keyboard;
+    if (!kb) return;
+    const blocked = () => {
+      const el = document.activeElement;
+      if (el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return true;
+      return this.eventModal.isOpen()
+        || this.stageGateModal.isOpen()
+        || this.projectPanel.isOpen();
+    };
+    kb.on('keydown-SPACE', () => {
+      if (blocked()) return;
+      this.applySpeed(Game.time.speed === 'paused' ? 'normal' : 'paused');
+    });
+    kb.on('keydown-ONE', () => { if (!blocked()) this.applySpeed('normal'); });
+    kb.on('keydown-TWO', () => { if (!blocked()) this.applySpeed('fast'); });
+  }
+
+  // ── Day/night & seasons ────────────────────────────────────────────
+
+  // Mood layers sit above the campus life but below the UI bars: a cool
+  // multiply wash for dusk/night, a faint cold wash for winter, and warm
+  // window glows + lantern flames that come alive after dark.
+  private buildMoodLayers(width: number, height: number) {
+    this.duskOverlay = this.add.rectangle(width / 2, height / 2, width, height, 0x16203e)
+      .setBlendMode(Phaser.BlendModes.MULTIPLY)
+      .setAlpha(0);
+    this.winterOverlay = this.add.rectangle(width / 2, height / 2, width, height, 0xaec4dc)
+      .setBlendMode(Phaser.BlendModes.MULTIPLY)
+      .setAlpha(0);
+
+    // Warm light anchored to the actual painted sources on the hall:
+    // a candle on each porch post base, and the lit window right of the
+    // door. (Positions read off the background art — keep them in sync if
+    // the painting changes.)
+    this.nightLights = this.add.container(0, 0).setAlpha(0);
+    const candles = [{ x: 625, y: 388 }, { x: 761, y: 416 }];
+    for (const p of candles) {
+      const halo = this.add.circle(p.x, p.y, 14, 0xff9840, 0.18).setBlendMode(Phaser.BlendModes.ADD);
+      const core = this.add.circle(p.x, p.y, 5, 0xffd080, 0.50).setBlendMode(Phaser.BlendModes.ADD);
+      // Faint pool of light on the flagstones beneath the candle.
+      const pool = this.add.ellipse(p.x, p.y + 26, 52, 18, 0xff9840, 0.10).setBlendMode(Phaser.BlendModes.ADD);
+      this.nightLights.add([halo, core, pool]);
+      this.tweens.add({
+        targets: [halo, core], alpha: '-=0.08', scaleX: 1.25, scaleY: 1.25,
+        duration: 380 + Math.random() * 240, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      });
+    }
+    const windowGlow = this.add.ellipse(862, 375, 34, 46, 0xffb050, 0.28).setBlendMode(Phaser.BlendModes.ADD);
+    this.nightLights.add(windowGlow);
+    this.tweens.add({
+      targets: windowGlow, alpha: 0.38, duration: 2400, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+    });
+  }
+
+  // Each month ends in a short night: dusk falls around day 24, full dark
+  // holds through 28, and dawn breaks before the new month. Winter (months
+  // 12 and 1 of each year) adds a cold cast and falling snow.
+  private updateDayNight(day: number, immediate = false) {
+    const dayOfMonth = ((day - 1) % 30) + 1;
+    const NIGHT: Record<number, number> = {
+      23: 0.12, 24: 0.24, 25: 0.36, 26: 0.44, 27: 0.46, 28: 0.44, 29: 0.30, 30: 0.12,
+    };
+    const duskTarget  = NIGHT[dayOfMonth] ?? 0;
+    const lightTarget = Math.min(1, duskTarget / 0.36);
+
+    const monthOfYear = (Math.floor((day - 1) / 30) % 12) + 1;
+    const winter = monthOfYear === 12 || monthOfYear === 1;
+    const winterTarget = winter ? 0.14 : 0;
+    this.setSnowing(winter);
+
+    if (immediate) {
+      this.duskOverlay.setAlpha(duskTarget);
+      this.nightLights.setAlpha(lightTarget);
+      this.winterOverlay.setAlpha(winterTarget);
+      return;
+    }
+    this.tweens.killTweensOf(this.duskOverlay);
+    this.tweens.killTweensOf(this.nightLights);
+    this.tweens.killTweensOf(this.winterOverlay);
+    this.tweens.add({ targets: this.duskOverlay,   alpha: duskTarget,   duration: 1100, ease: 'Sine.easeInOut' });
+    this.tweens.add({ targets: this.nightLights,   alpha: lightTarget,  duration: 1100, ease: 'Sine.easeInOut' });
+    this.tweens.add({ targets: this.winterOverlay, alpha: winterTarget, duration: 1100, ease: 'Sine.easeInOut' });
+  }
+
+  private setSnowing(on: boolean) {
+    if (on === this.snowing) return;
+    this.snowing = on;
+    if (!on) {
+      this.snowTimer?.remove(false);
+      this.snowTimer = undefined;
+      return;
+    }
+    this.snowTimer = this.time.addEvent({
+      delay: 240,
+      loop: true,
+      callback: () => this.spawnSnowflake(),
+    });
+  }
+
+  private spawnSnowflake() {
+    const x = Math.random() * 1280;
+    const flake = this.add.circle(x, -6, 1.5 + Math.random() * 1.8, 0xf4f6fb, 0.45 + Math.random() * 0.35);
+    // Drawn into the ambient layer so flakes stay under the UI chrome.
+    this.ambientLayer.add(flake);
+    this.tweens.add({
+      targets: flake,
+      y: 700,
+      x: x + (Math.random() - 0.5) * 140,
+      duration: 6500 + Math.random() * 4500,
+      ease: 'Sine.easeInOut',
+      onComplete: () => flake.destroy(),
+    });
   }
 
   // ── Campus life ───────────────────────────────────────────────────
@@ -721,18 +942,20 @@ export class CampusScene extends Phaser.Scene {
     const startX = 160;
     const endX = 470 + Math.random() * 70;
     const startY = 118 + Math.random() * 68;
+    const canFly = this.textures.exists('bird_sheet') && this.anims.exists('bird_fly');
 
     for (let i = 0; i < groupSize; i++) {
-      const frame = Math.floor(Math.random() * BIRD_FRAME.count);
-      const bird = this.add.image(
-        startX - i * (16 + Math.random() * 16),
-        startY + (Math.random() - 0.5) * 34,
-        'ambient_birds_sheet',
-      )
-        .setOrigin(0.5)
-        .setCrop(frame * BIRD_FRAME.w, 0, BIRD_FRAME.w, BIRD_FRAME.h)
+      const x = startX - i * (16 + Math.random() * 16);
+      const y = startY + (Math.random() - 0.5) * 34;
+      const bird = canFly
+        ? this.add.sprite(x, y, 'bird_sheet')
+        : this.add.image(x, y, 'ambient_birds_sheet');
+      bird.setOrigin(0.5)
         .setScale(0.16 + Math.random() * 0.08)
         .setAlpha(0.24);
+      if (canFly) {
+        (bird as Phaser.GameObjects.Sprite).play({ key: 'bird_fly', delay: Math.random() * 300 });
+      }
       this.ambientLayer.add(bird);
 
       this.tweens.add({
@@ -761,18 +984,187 @@ export class CampusScene extends Phaser.Scene {
     });
   }
 
-  private startWorkSparkles() {
-    if (this.workSparkTimer) return;
-    this.workSparkTimer = this.time.addEvent({
-      delay: 1800,
+  // ── Work-table social life ─────────────────────────────────────────
+
+  // While a project runs, scholars at the table periodically exchange
+  // emotes driven by their actual chemistry scores — partnerships glow,
+  // rivalries spark. This is the visible texture of "the team at work."
+  private startWorkEmotes() {
+    if (this.emoteTimer) return;
+    this.emoteTimer = this.time.addEvent({
+      delay: 4600,
       loop: true,
-      callback: () => this.spawnWorkSparkles(3),
+      callback: () => this.emitWorkEmote(),
     });
   }
 
-  private stopWorkSparkles() {
-    this.workSparkTimer?.remove(false);
-    this.workSparkTimer = undefined;
+  private stopWorkEmotes() {
+    this.emoteTimer?.remove(false);
+    this.emoteTimer = undefined;
+  }
+
+  private emitWorkEmote() {
+    const project = Game.state.activeProject;
+    const stage = project?.stages[project.stages.length - 1];
+    if (!project || !stage || project.state !== 'in_development') return;
+
+    const ids = [stage.leadScholarId, ...stage.assistantScholarIds]
+      .filter(id => this.actors.has(id));
+    if (ids.length === 0) return;
+
+    // Pairs chat most of the time; otherwise the lead mutters over the work.
+    if (ids.length >= 2 && Math.random() < 0.75) {
+      const i = Math.floor(Math.random() * ids.length);
+      let j = Math.floor(Math.random() * (ids.length - 1));
+      if (j >= i) j += 1;
+      this.emoteChat(ids[i], ids[j]);
+    } else {
+      const lead = this.actors.get(stage.leadScholarId);
+      if (lead) this.spawnEmote(lead, '✎', '#c8a87a');
+    }
+  }
+
+  // Glyph + color for a chemistry score between two working scholars.
+  private chemistryEmote(score: number): { glyph: string; color: string } {
+    if (score >= 80)  return { glyph: '♥', color: '#e8b4c8' };
+    if (score >= 50)  return { glyph: '♥', color: '#d4a855' };
+    if (score >= 20)  return { glyph: '♪', color: '#8ab87a' };
+    if (score <= -80) return { glyph: '⚡', color: '#c84a3a' };
+    if (score <= -50) return { glyph: '⚡', color: '#c87a4a' };
+    if (score <= -20) return { glyph: '✗', color: '#a88858' };
+    return { glyph: '…', color: '#a89878' };
+  }
+
+  private emoteChat(idA: string, idB: string) {
+    const a = this.actors.get(idA);
+    const b = this.actors.get(idB);
+    if (!a || !b) return;
+    const score = getScore(idA, idB);
+    const { glyph, color } = this.chemistryEmote(score);
+    const friendly = score >= 20;
+    const hostile  = score <= -20;
+
+    for (const actor of [a, b]) {
+      // Small hop — toward each other when friendly, a stiff shrug otherwise.
+      const dir = actor === a ? Math.sign(b.container.x - a.container.x) : Math.sign(a.container.x - b.container.x);
+      this.tweens.add({
+        targets: actor.container,
+        y: actor.container.y - (friendly ? 5 : 3),
+        x: actor.container.x + (friendly ? dir * 3 : 0),
+        angle: hostile ? (actor === a ? -3 : 3) : 0,
+        duration: 150,
+        yoyo: true,
+        ease: 'Sine.easeOut',
+      });
+      this.spawnEmote(actor, glyph, color);
+    }
+  }
+
+  private spawnEmote(actor: ScholarActor, glyph: string, color: string) {
+    const x = actor.container.x + (Math.random() - 0.5) * 10;
+    const y = actor.container.y - 104;
+    const emote = this.add.text(x, y, glyph, {
+      fontSize: '15px', color, fontFamily: 'Georgia, serif',
+      stroke: '#0d0704', strokeThickness: 3,
+    }).setOrigin(0.5).setAlpha(0).setDepth(8);
+    this.tweens.add({
+      targets: emote,
+      alpha: { from: 0, to: 0.95 },
+      y: y - 14,
+      duration: 420,
+      ease: 'Sine.easeOut',
+      onComplete: () => {
+        this.tweens.add({
+          targets: emote, alpha: 0, y: emote.y - 10, duration: 700, delay: 350,
+          onComplete: () => emote.destroy(),
+        });
+      },
+    });
+  }
+
+  // Idle scholars near each other occasionally exchange a word, colored by
+  // their chemistry — keeps the courtyard alive between projects and
+  // quietly teaches who works well with whom.
+  private emitIdleChatter() {
+    if (Game.state.activeProject) return; // work emotes cover project time
+    if (Math.random() < 0.45) return;
+    const idle = [...this.actors.entries()].filter(([, a]) => a.mode === 'idle' && !a.walkTween);
+    for (let i = 0; i < idle.length; i++) {
+      for (let j = i + 1; j < idle.length; j++) {
+        const [idA, a] = idle[i];
+        const [idB, b] = idle[j];
+        const close = Phaser.Math.Distance.Between(
+          a.container.x, a.container.y, b.container.x, b.container.y,
+        ) < 240;
+        if (close) {
+          this.emoteChat(idA, idB);
+          return;
+        }
+      }
+    }
+  }
+
+  // React animation on one scholar (skill-ups, mid-events, celebrations).
+  private playReact(scholarId: string) {
+    const actor = this.actors.get(scholarId);
+    if (!actor || !actor.hasFullAnims || actor.walkTween) return;
+    if (actor.mode === 'working') {
+      // Return to the seated pose after reacting.
+      actor.sprite.play(`${actor.spriteSet}_react`);
+      actor.sprite.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+        if (actor.mode === 'working') actor.sprite.play(`${actor.spriteSet}_sit`);
+        else this.playMotionAnim(actor, 'idle');
+      });
+    } else if (actor.mode === 'idle') {
+      actor.sprite.play(`${actor.spriteSet}_react`);
+      actor.sprite.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => {
+        if (actor.mode === 'idle') this.playMotionAnim(actor, 'idle');
+      });
+    }
+  }
+
+  // Everyone at the table cheers — used at stage completions and release.
+  private celebrateWorkTeam(burst: boolean) {
+    const project = Game.state.activeProject;
+    const stage = project?.stages[project.stages.length - 1];
+    const ids = stage ? [stage.leadScholarId, ...stage.assistantScholarIds] : [];
+    for (const id of ids) {
+      const actor = this.actors.get(id);
+      if (!actor) continue;
+      this.playReact(id);
+      this.tweens.add({
+        targets: actor.container,
+        y: actor.container.y - 9,
+        duration: 170,
+        yoyo: true,
+        repeat: 1,
+        ease: 'Sine.easeOut',
+      });
+    }
+    if (burst) this.spawnCompletionBurst();
+  }
+
+  private spawnCompletionBurst() {
+    const { x, y } = ACTIVE_WORK_AREA;
+    for (let i = 0; i < 14; i++) {
+      const angle = (i / 14) * Math.PI * 2 + Math.random() * 0.4;
+      const dist = 50 + Math.random() * 70;
+      const spark = this.add.image(x, y - 20, 'fx_gold_sparkle')
+        .setScale(0.2 + Math.random() * 0.2)
+        .setAlpha(0.9)
+        .setDepth(8)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({
+        targets: spark,
+        x: x + Math.cos(angle) * dist,
+        y: y - 20 + Math.sin(angle) * dist * 0.6 - 30,
+        alpha: 0,
+        angle: (Math.random() - 0.5) * 180,
+        duration: 800 + Math.random() * 400,
+        ease: 'Cubic.easeOut',
+        onComplete: () => spark.destroy(),
+      });
+    }
   }
 
   // ── Stage axis bubbles + live gauge ────────────────────────────────
@@ -867,7 +1259,7 @@ export class CampusScene extends Phaser.Scene {
       const base = 1 + Math.floor((skill / 10) * 2);
       const value = base + (isLead ? 1 : 0) + (Math.random() < 0.18 ? 1 : 0);
       this.stageAxisAccumulator[axis] = (this.stageAxisAccumulator[axis] ?? 0) + value;
-      this.spawnBubble(pos.x, pos.y - 30, axis, value, isLead, skill);
+      this.spawnBubble(pos.x, pos.y - 86, axis, value, isLead, skill);
     }
     this.refreshStageGauge();
   }
@@ -926,39 +1318,6 @@ export class CampusScene extends Phaser.Scene {
     });
   }
 
-  private spawnWorkSparkles(count: number) {
-    if (!Game.state.activeProject) return;
-
-    for (let i = 0; i < count; i++) {
-      const spark = this.add.image(
-        WORK_SPARK_ORIGIN.x + (Math.random() - 0.5) * 120,
-        WORK_SPARK_ORIGIN.y + (Math.random() - 0.5) * 48,
-        'fx_gold_sparkle',
-      )
-        .setScale(0.22 + Math.random() * 0.18)
-        .setAlpha(0)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      this.ambientLayer.add(spark);
-
-      this.tweens.add({
-        targets: spark,
-        alpha:   { from: 0, to: 0.65 },
-        y:       spark.y - (16 + Math.random() * 24),
-        angle:   (Math.random() - 0.5) * 40,
-        duration: 650 + Math.random() * 450,
-        ease:    'Sine.easeOut',
-        onComplete: () => {
-          this.tweens.add({
-            targets: spark,
-            alpha:   0,
-            duration: 360,
-            onComplete: () => spark.destroy(),
-          });
-        },
-      });
-    }
-  }
-
   private showActiveWork(project: Project) {
     this.activeWorkLayer.setVisible(true);
     this.refreshActiveWork(project);
@@ -996,7 +1355,7 @@ export class CampusScene extends Phaser.Scene {
   private startActiveWorkEffects() {
     if (this.activeWorkTimer) return;
     this.activeWorkTimer = this.time.addEvent({
-      delay: 760,
+      delay: 1300,
       loop: true,
       callback: () => this.spawnStageActivity(),
     });
@@ -1010,96 +1369,151 @@ export class CampusScene extends Phaser.Scene {
     this.spawnStageSpark(stage.key);
   }
 
+  // Stage effects are anchored to fixed points ON the workstation art —
+  // books on the left (research), the quill area on the right (drafting),
+  // the manuscript center (refinement) — so the motion reads as part of the
+  // desk rather than detached glows.
   private spawnStageSpark(stage: StageKey) {
+    const anchors: Record<StageKey, { dx: number; dy: number; tex: string; scale: number; alpha: number }> = {
+      research:   { dx: -34, dy: -34, tex: 'fx_gold_sparkle', scale: 0.10, alpha: 0.30 },
+      drafting:   { dx:  22, dy: -26, tex: 'fx_ink_splatter', scale: 0.13, alpha: 0.30 },
+      refinement: { dx:   2, dy: -34, tex: 'fx_gold_sparkle', scale: 0.16, alpha: 0.45 },
+    };
+    const a = anchors[stage];
     const spark = this.add.image(
-      ACTIVE_WORK_AREA.x - 54 + Math.random() * 108,
-      ACTIVE_WORK_AREA.y - 20 + Math.random() * 36,
-      stage === 'drafting' ? 'fx_ink_splatter' : 'fx_gold_sparkle',
+      ACTIVE_WORK_AREA.x + a.dx + (Math.random() - 0.5) * 14,
+      ACTIVE_WORK_AREA.y + a.dy + (Math.random() - 0.5) * 8,
+      a.tex,
     )
-      .setScale(stage === 'research' ? 0.08 : 0.12 + Math.random() * 0.08)
-      .setAlpha(stage === 'refinement' ? 0.42 : 0.24)
+      .setScale(a.scale + Math.random() * 0.04)
+      .setAlpha(a.alpha)
       .setBlendMode(Phaser.BlendModes.ADD);
     this.activeWorkLayer.add(spark);
     this.tweens.add({
       targets: spark,
-      y: spark.y - 22,
-      angle: 40,
+      y: spark.y - 16,
+      angle: (Math.random() - 0.5) * 30,
       alpha: 0,
-      duration: 1000,
+      duration: 1100,
       ease: 'Sine.easeOut',
       onComplete: () => spark.destroy(),
     });
   }
 
+  // Build one animated actor per scholar. Founders use their own sheets;
+  // procedural hires share the three generic villager sheets (picked by a
+  // stable hash of their id so a scholar keeps their look across sessions).
   private buildScholarSprites() {
+    if (!this.actorsLayer || !this.actorsLayer.active) {
+      this.actorsLayer = this.add.container(0, 0);
+    }
     let hireSlot = 0;
     for (const scholar of Game.state.scholars) {
       const isNamed = (NAMED_SCHOLARS as readonly string[]).includes(scholar.id);
       const pos = isNamed
         ? SCHOLAR_POS[scholar.id as NamedId]
         : HIRE_POS[hireSlot++ % HIRE_POS.length];
-
-      const card = this.buildPortraitCard(scholar.id, scholar, isNamed);
-      card.setPosition(pos.x, pos.y);
-      this.scholarCards.set(scholar.id, card);
-      this.scholarHomePositions.set(scholar.id, pos);
-      if (scholar.isAvailable) this.startBob(scholar.id, card, pos.y);
+      this.actors.set(scholar.id, this.buildActor(scholar.id, scholar, isNamed, pos));
     }
+    this.refreshScholarSprites();
   }
 
   private rebuildScholarSprites() {
-    // Tear down existing cards and tweens
-    for (const tween of this.scholarTweens.values()) tween.stop();
-    for (const card  of this.scholarCards.values())  card.destroy();
-    this.scholarTweens.clear();
-    this.scholarCards.clear();
-    this.scholarHomePositions.clear();
+    this.destroyActors();
     this.buildScholarSprites();
   }
 
-  private buildPortraitCard(id: string, scholar: { name: string; isAvailable: boolean; isResting?: boolean }, isNamed: boolean) {
-    const available = scholar.isAvailable;
+  // Students are independent of the roster and survive actor rebuilds;
+  // the scene teardown destroys them with everything else.
+  private destroyActors() {
+    for (const actor of this.actors.values()) {
+      actor.walkTween?.stop();
+      actor.wanderEvent?.remove(false);
+      actor.container.destroy();
+    }
+    this.actors.clear();
+  }
+
+  private genericVariant(id: string): string {
+    let hash = 0;
+    for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+    return `generic_${GENERIC_VARIANTS[Math.abs(hash) % GENERIC_VARIANTS.length]}`;
+  }
+
+  private buildActor(
+    id: string,
+    scholar: { name: string; isAvailable: boolean; isResting?: boolean },
+    isNamed: boolean,
+    pos: { x: number; y: number },
+  ): ScholarActor {
     const firstName = scholar.name.split(' ')[0];
+    const spriteSet = isNamed ? id : this.genericVariant(id);
+    const idleTex = `scholar_${spriteSet}_idle`;
 
-    const bg = this.add.rectangle(0, -4, 78, 96, 0x1a0d06)
-      .setStrokeStyle(1, available ? 0x5a3820 : 0x2a160a);
-
-    const portrait = isNamed
-      ? this.add.image(0, -9, `portrait_${id}`).setDisplaySize(68, 68)
-      : this.buildInitialPortrait(firstName);
-
-    const label = this.add.text(0, 31, firstName, {
+    const shadow = this.add.ellipse(0, 0, 40, 12, 0x120804, 0.35);
+    const sprite = this.add.sprite(0, 2, this.textures.exists(idleTex) ? idleTex : 'scholar_yildiz_idle')
+      .setOrigin(0.5, 1)
+      .setScale(ACTOR_SCALE);
+    const label = this.add.text(0, 6, firstName, {
       fontSize: '11px', color: '#c8a87a', fontFamily: 'Georgia, serif',
-    }).setOrigin(0.5);
-
-    // "Zzz" overlay shown when the scholar is on rest. Initially hidden;
-    // updateRestOverlay() shows/hides as state changes.
-    const zzz = this.add.text(28, -38, 'Zzz', {
+      stroke: '#1a0d06', strokeThickness: 3,
+    }).setOrigin(0.5, 0);
+    const zzz = this.add.text(16, -100, 'Zzz', {
       fontSize: '13px', color: '#8ab8c8', fontFamily: 'Georgia, serif',
       fontStyle: 'italic', stroke: '#0a1218', strokeThickness: 3,
     }).setOrigin(0.5).setVisible(scholar.isResting === true);
+    // Restlessness warning — the campus itself signals who needs attention.
+    const alert = this.add.text(-16, -102, '!', {
+      fontSize: '15px', color: '#c87a4a', fontFamily: 'Georgia, serif',
+      fontStyle: 'bold', stroke: '#1a0d06', strokeThickness: 3,
+    }).setOrigin(0.5).setVisible(false);
 
-    const card = this.add.container(0, 0, [bg, portrait, label, zzz]);
-    card.setAlpha(available ? 1 : 0.45);
-    card.setData('zzz', zzz);
-    card.setData('bg', bg);
+    const container = this.add.container(pos.x, pos.y, [shadow, sprite, label, zzz, alert]);
+    this.actorsLayer.add(container);
 
-    // Interactive hit-area — click anywhere on the card opens the
-    // per-scholar action menu (rest / wake / focus on scholar in panel).
-    bg.setInteractive({ useHandCursor: true });
-    bg.on('pointerover', () => bg.setStrokeStyle(1, 0xd4a855));
-    bg.on('pointerout',  () => {
+    const actor: ScholarActor = {
+      container, sprite, label, zzz, alert,
+      home: pos,
+      spriteSet,
+      hasFullAnims: isNamed,
+      // Start in 'away' so the first refresh transitions into the real mode
+      // (which kicks off wandering / seating as appropriate).
+      mode: 'away',
+      target: { ...pos },
+    };
+    this.playMotionAnim(actor, 'idle');
+
+    sprite.setInteractive({ useHandCursor: true });
+    sprite.on('pointerover', () => {
+      label.setColor('#e8d5b0');
+      Audio.playHover();
       const s = Game.state.scholars.find(sch => sch.id === id);
-      const isAvail = s?.isAvailable ?? false;
-      bg.setStrokeStyle(1, isAvail ? 0x5a3820 : 0x2a160a);
+      const status = s?.restlessFlagged ? '  ·  restless' : s?.isResting ? '  ·  resting' : '';
+      this.showTooltip(`${scholar.name} — ${s?.primaryDiscipline ?? ''}${status}`, container.x, container.y - 110);
     });
-    bg.on('pointerdown', () => this.openScholarActionMenu(id));
+    sprite.on('pointerout', () => {
+      label.setColor('#c8a87a');
+      this.hideTooltip();
+    });
+    sprite.on('pointerdown', () => {
+      this.hideTooltip();
+      this.openScholarActionMenu(id);
+    });
 
-    return card;
+    return actor;
+  }
+
+  // Play idle/walk/sit by name with graceful fallback for generic sheets
+  // that only ship an idle strip.
+  private playMotionAnim(actor: ScholarActor, kind: 'idle' | 'walk' | 'sit') {
+    const wanted = actor.hasFullAnims ? `${actor.spriteSet}_${kind}` : `${actor.spriteSet}_idle`;
+    const fallback = `${actor.spriteSet}_idle`;
+    const key = this.anims.exists(wanted) ? wanted : this.anims.exists(fallback) ? fallback : undefined;
+    if (key && actor.sprite.anims?.currentAnim?.key !== key) actor.sprite.play(key);
   }
 
   // Show a small in-scene action menu anchored beneath the scholar's
-  // portrait card. Currently exposes: open detail panel, toggle rest.
+  // sprite. Currently exposes: open detail panel, toggle rest.
   // The menu is a single transient container that destroys itself on
   // pointerdown anywhere off it.
   private scholarActionMenu?: Phaser.GameObjects.Container;
@@ -1107,16 +1521,16 @@ export class CampusScene extends Phaser.Scene {
     this.closeScholarActionMenu();
 
     const scholar = Game.state.scholars.find(s => s.id === scholarId);
-    const card = this.scholarCards.get(scholarId);
-    if (!scholar || !card) return;
+    const actor = this.actors.get(scholarId);
+    if (!scholar || !actor) return;
 
     const onProject = !scholar.isAvailable && !scholar.isResting;
     const canRest   = !onProject;
 
-    // Menu positioned just under the portrait card (~55px below center)
+    // Menu positioned just under the scholar's feet
     const menuW = 168;
-    const menuX = card.x;
-    const menuY = card.y + 70;
+    const menuX = Math.min(1100, Math.max(180, actor.container.x));
+    const menuY = Math.min(640, actor.container.y + 52);
 
     const bg = this.add.rectangle(0, 0, menuW, canRest ? 84 : 56, 0x14100a, 0.96)
       .setStrokeStyle(1, 0x5a3820);
@@ -1199,86 +1613,191 @@ export class CampusScene extends Phaser.Scene {
 
   private updateRestOverlay(scholarId: string) {
     const scholar = Game.state.scholars.find(s => s.id === scholarId);
-    const card = this.scholarCards.get(scholarId);
-    if (!scholar || !card) return;
-    const zzz = card.getData('zzz') as Phaser.GameObjects.Text | undefined;
-    if (zzz) zzz.setVisible(scholar.isResting === true);
+    const actor = this.actors.get(scholarId);
+    if (!scholar || !actor) return;
+    actor.zzz.setVisible(scholar.isResting === true);
   }
 
-  // A small colored circle with the scholar's first initial — used as a
-  // portrait stand-in for hires that don't have a portrait asset.
-  private buildInitialPortrait(firstName: string): Phaser.GameObjects.Container {
-    const c = this.add.container(0, -9);
-    const initial = firstName.charAt(0).toUpperCase();
-    // Hash the initial to a stable color from a small palette
-    const palette = [0x5c3418, 0x3d2418, 0x4a3018, 0x5a3820, 0x6e3e1c, 0x6a4828];
-    const color = palette[initial.charCodeAt(0) % palette.length];
-    const circle = this.add.circle(0, 0, 30, color).setStrokeStyle(2, 0x8a6848);
-    const letter = this.add.text(0, 0, initial, {
-      fontSize: '32px', color: '#e8d5b0', fontFamily: 'Georgia, serif',
-    }).setOrigin(0.5);
-    c.add([circle, letter]);
-    return c;
-  }
+  // ── Actor behavior engine ──────────────────────────────────────────
 
-  private startBob(id: string, target: Phaser.GameObjects.Container, baseY: number) {
-    const tween = this.tweens.add({
-      targets:  target,
-      y:        baseY - 5,
-      duration: 1500 + Math.random() * 700,
-      yoyo:     true,
-      repeat:   -1,
-      ease:     'Sine.easeInOut',
-      delay:    Math.random() * 1400,
-    });
-    this.scholarTweens.set(id, tween);
-  }
-
+  // Re-derive every actor's desired mode from game state and steer them
+  // there. Called daily and after any roster/project change. Walks already
+  // heading to the right place are left alone.
   private refreshScholarSprites() {
-    const workPositions = this.activeWorkScholarPositions();
-    for (const [id, card] of this.scholarCards) {
+    const seats = this.activeWorkScholarPositions();
+    for (const [id, actor] of this.actors) {
       const scholar = Game.state.scholars.find(s => s.id === id);
       if (!scholar) continue; // a scholar that left will be cleared by rebuild
 
-      const tween = this.scholarTweens.get(id);
-      const target = workPositions.get(id) ?? this.scholarHomePositions.get(id) ?? { x: card.x, y: card.y };
-      const isWorking = workPositions.has(id);
+      const seat = seats.get(id);
+      const mode: ScholarActor['mode'] =
+        seat              ? 'working' :
+        scholar.isResting ? 'resting' :
+        scholar.isAvailable ? 'idle'  :
+        'away';
+      const target = seat ?? actor.home;
 
-      if (Math.abs(card.x - target.x) > 1 || Math.abs(card.y - target.y) > 1) {
-        if (tween) { tween.stop(); this.scholarTweens.delete(id); }
-        this.tweens.add({
-          targets: card,
-          x: target.x,
-          y: target.y,
-          duration: 360,
-          ease: 'Sine.easeOut',
+      const changed = mode !== actor.mode
+        || Math.abs(actor.target.x - target.x) > 1
+        || Math.abs(actor.target.y - target.y) > 1;
+      if (changed) this.applyActorMode(actor, mode, target, seat?.flip ?? false);
+
+      // Light state that can change without a mode change
+      actor.zzz.setVisible(scholar.isResting === true);
+      actor.alert.setVisible(scholar.restlessFlagged === true);
+      actor.container.setAlpha(mode === 'away' ? 0.55 : mode === 'resting' ? 0.85 : 1);
+    }
+    this.sortActorsByDepth();
+  }
+
+  private applyActorMode(
+    actor: ScholarActor,
+    mode: ScholarActor['mode'],
+    target: { x: number; y: number },
+    flipAtSeat: boolean,
+  ) {
+    actor.mode = mode;
+    actor.target = { x: target.x, y: target.y };
+    actor.wanderEvent?.remove(false);
+    actor.wanderEvent = undefined;
+
+    switch (mode) {
+      case 'working':
+        this.walkActorTo(actor, target.x, target.y, () => {
+          actor.sprite.setFlipX(flipAtSeat);
+          this.playMotionAnim(actor, 'sit');
         });
-      }
-
-      if (scholar.isAvailable) {
-        card.setAlpha(1);
-        if (!isWorking && (!tween || !tween.isPlaying())) this.startBob(id, card, target.y);
-      } else if (scholar.isResting) {
-        card.setAlpha(0.78);
-        if (tween) { tween.stop(); this.scholarTweens.delete(id); }
-      } else {
-        card.setAlpha(isWorking ? 0.92 : 0.45);
-        if (tween) { tween.stop(); this.scholarTweens.delete(id); }
-      }
-      const zzz = card.getData('zzz') as Phaser.GameObjects.Text | undefined;
-      if (zzz) zzz.setVisible(scholar.isResting === true);
+        break;
+      case 'resting':
+        this.walkActorTo(actor, actor.home.x, actor.home.y, () => {
+          this.playMotionAnim(actor, 'sit');
+        });
+        break;
+      case 'idle':
+        this.walkActorTo(actor, actor.home.x, actor.home.y, () => {
+          this.playMotionAnim(actor, 'idle');
+          this.scheduleWander(actor);
+        });
+        break;
+      case 'away':
+        this.walkActorTo(actor, actor.home.x, actor.home.y, () => {
+          this.playMotionAnim(actor, 'idle');
+        });
+        break;
     }
   }
 
-  private activeWorkScholarPositions(): Map<string, { x: number; y: number }> {
-    const positions = new Map<string, { x: number; y: number }>();
+  // Walk (with the walk animation and direction flip) to a point, then
+  // settle. Close-enough targets snap immediately so daily refreshes don't
+  // cause shuffling in place.
+  private walkActorTo(actor: ScholarActor, x: number, y: number, onArrive: () => void) {
+    actor.walkTween?.stop();
+    actor.walkTween = undefined;
+
+    const dist = Phaser.Math.Distance.Between(actor.container.x, actor.container.y, x, y);
+    if (dist < 6) {
+      actor.container.setPosition(x, y);
+      onArrive();
+      this.sortActorsByDepth();
+      return;
+    }
+
+    actor.sprite.setFlipX(x < actor.container.x);
+    this.playMotionAnim(actor, 'walk');
+    actor.walkTween = this.tweens.add({
+      targets: actor.container,
+      x, y,
+      duration: dist / WALK_SPEED,
+      ease: 'Sine.easeInOut',
+      onUpdate: () => this.sortActorsByDepth(),
+      onComplete: () => {
+        actor.walkTween = undefined;
+        actor.sprite.setFlipX(false);
+        onArrive();
+        this.sortActorsByDepth();
+      },
+    });
+  }
+
+  // Idle scholars drift between spots near their home so the courtyard
+  // reads as inhabited rather than posed.
+  private scheduleWander(actor: ScholarActor) {
+    actor.wanderEvent?.remove(false);
+    actor.wanderEvent = this.time.addEvent({
+      delay: 4000 + Math.random() * 6000,
+      callback: () => {
+        if (actor.mode !== 'idle' || actor.walkTween) { this.scheduleWander(actor); return; }
+        const x = Phaser.Math.Clamp(actor.home.x + (Math.random() - 0.5) * 150, WANDER_BOUNDS.minX, WANDER_BOUNDS.maxX);
+        const y = Phaser.Math.Clamp(actor.home.y + (Math.random() - 0.5) * 50,  WANDER_BOUNDS.minY, WANDER_BOUNDS.maxY);
+        this.walkActorTo(actor, x, y, () => {
+          this.playMotionAnim(actor, 'idle');
+          this.scheduleWander(actor);
+        });
+      },
+    });
+  }
+
+  // Painter's order: actors lower on the screen draw in front.
+  private sortActorsByDepth() {
+    if (!this.actorsLayer) return;
+    const layer = this.actorsLayer as unknown as { sort?: (prop: string) => void };
+    layer.sort?.('y');
+  }
+
+  // A couple of student NPCs wander the lower courtyard once the
+  // institution reaches Academy tier — the campus visibly grows with you.
+  private buildStudents() {
+    // Scene restarts reuse this instance — drop refs to destroyed sprites.
+    this.studentSprites = this.studentSprites.filter(s => s.active);
+    if (this.studentSprites.length > 0) return;
+    if (Game.state.tier < 2) return;
+    if (!this.textures.exists('student_idle')) return;
+    for (let i = 0; i < 2; i++) {
+      const x = 360 + Math.random() * 560;
+      const y = 600 + Math.random() * 30;
+      const student = this.add.sprite(x, y, 'student_idle')
+        .setOrigin(0.5, 1)
+        .setScale(ACTOR_SCALE)
+        .setAlpha(0.9);
+      if (this.anims.exists('student_idle')) student.play('student_idle');
+      this.actorsLayer.add(student);
+      this.studentSprites.push(student);
+      this.wanderStudent(student);
+    }
+  }
+
+  private wanderStudent(student: Phaser.GameObjects.Sprite) {
+    if (!student.active) return;
+    this.time.delayedCall(3000 + Math.random() * 7000, () => {
+      if (!student.active) return;
+      const x = Phaser.Math.Clamp(student.x + (Math.random() - 0.5) * 240, 300, 1000);
+      const y = Phaser.Math.Clamp(student.y + (Math.random() - 0.5) * 40, 580, 650);
+      student.setFlipX(x < student.x);
+      if (this.anims.exists('student_walk')) student.play('student_walk');
+      this.tweens.add({
+        targets: student,
+        x, y,
+        duration: Phaser.Math.Distance.Between(student.x, student.y, x, y) / (WALK_SPEED * 0.8),
+        ease: 'Sine.easeInOut',
+        onComplete: () => {
+          if (!student.active) return;
+          student.setFlipX(false);
+          if (this.anims.exists('student_idle')) student.play('student_idle');
+          this.wanderStudent(student);
+        },
+      });
+    });
+  }
+
+  private activeWorkScholarPositions(): Map<string, { x: number; y: number; flip: boolean }> {
+    const positions = new Map<string, { x: number; y: number; flip: boolean }>();
     const project = Game.state.activeProject;
     const stage = project?.stages[project.stages.length - 1];
     if (!stage || project.state !== 'in_development') return positions;
 
     const ids = [stage.leadScholarId, ...stage.assistantScholarIds];
     ids.forEach((id, index) => {
-      positions.set(id, ACTIVE_WORK_SLOTS[index % ACTIVE_WORK_SLOTS.length]);
+      positions.set(id, WORK_SEATS[index % WORK_SEATS.length]);
     });
     return positions;
   }
@@ -1508,18 +2027,62 @@ export class CampusScene extends Phaser.Scene {
   private static readonly CARD_GAP = 8;
 
   private buildInfoStrips(_width: number) {
+    this.goalStrip       = this.add.container(CampusScene.CARD_X, CampusScene.CARD_Y_START).setDepth(5);
     this.commissionStrip = this.add.container(CampusScene.CARD_X, CampusScene.CARD_Y_START).setDepth(5);
     this.releasesStrip   = this.add.container(CampusScene.CARD_X, CampusScene.CARD_Y_START).setDepth(5);
     this.refreshInfoStrips();
   }
 
-  // Tear down + rebuild both cards. Sales tick at most once a day per work,
+  // The next structural goal for the institution, derived fresh from state
+  // each refresh. Returns null once the player has seen it all — free play.
+  private currentGoal(): { title: string; detail: string } | null {
+    const s = Game.state;
+    if (s.completedWorks.length < 1) {
+      return { title: 'Release your first work',
+               detail: 'Begin a New Work and guide it through all three stages.' };
+    }
+    if (s.scholars.length < 3) {
+      return { title: 'Grow the roster',
+               detail: 'Recruit from the Scholars panel — candidates take a month to arrive.' };
+    }
+    if (s.prestige < 50) {
+      return { title: 'Reach 50 prestige',
+               detail: `Quality works build renown (now ${s.prestige}). Patrons notice at 50.` };
+    }
+    if (s.tier < 2) {
+      return { title: 'Become an Academy',
+               detail: 'Hold 300 gold and six scholars. New zones will unlock.' };
+    }
+    if (s.departments.length === 0) {
+      return { title: 'Found a department',
+               detail: 'Three scholars sharing a discipline can work under a head.' };
+    }
+    if (s.tier < 3) {
+      return { title: 'Become a University',
+               detail: `Prestige 200 (now ${s.prestige}), 800 gold, twelve scholars.` };
+    }
+    return null;
+  }
+
+  // Tear down + rebuild the cards. Sales tick at most once a day per work,
   // so this is cheap and keeps state-vs-layout logic together.
   private refreshInfoStrips() {
+    this.goalStrip.removeAll(true);
     this.commissionStrip.removeAll(true);
     this.releasesStrip.removeAll(true);
 
     let y = CampusScene.CARD_Y_START;
+
+    // 0. Goal card — steady guidance at the top of the stack
+    const goal = this.currentGoal();
+    if (goal) {
+      const h = this.populateGoalCard(goal);
+      this.goalStrip.setY(y);
+      y += h + CampusScene.CARD_GAP;
+      this.goalStrip.setVisible(true);
+    } else {
+      this.goalStrip.setVisible(false);
+    }
 
     // 1. Commission card
     const active  = Game.state.activeCommission;
@@ -1542,6 +2105,37 @@ export class CampusScene extends Phaser.Scene {
     } else {
       this.releasesStrip.setVisible(false);
     }
+  }
+
+  // Compact "what to aim for next" card. Same visual language as the
+  // commission card; returns its height for stacking.
+  private populateGoalCard(goal: { title: string; detail: string }): number {
+    const w = CampusScene.CARD_W;
+    const padX = 12;
+    const padY = 8;
+    const h = padY * 2 + 44;
+
+    const bg = this.add.rectangle(0, 0, w, h, BAR_COLOR, 0.92)
+      .setOrigin(0, 0)
+      .setStrokeStyle(1, 0x3a2818, 0.9);
+    const accent = this.add.rectangle(0, 0, 3, h, 0x8ab87a, 0.9).setOrigin(0, 0);
+
+    const tag = this.add.text(padX + 6, padY, 'GOAL', {
+      fontSize: '10px', color: '#8ab87a', fontFamily: 'Georgia, serif',
+    }).setOrigin(0, 0);
+    tag.setLetterSpacing(2);
+
+    const title = this.add.text(padX + 52, padY - 1, goal.title, {
+      fontSize: '13px', color: '#e8d5b0', fontFamily: 'Georgia, serif',
+    }).setOrigin(0, 0);
+
+    const detail = this.add.text(padX + 6, padY + 18, goal.detail, {
+      fontSize: '11px', color: '#8a6848', fontFamily: 'Georgia, serif', fontStyle: 'italic',
+      wordWrap: { width: w - padX * 2 - 12 },
+    }).setOrigin(0, 0);
+
+    this.goalStrip.add([bg, accent, tag, title, detail]);
+    return h;
   }
 
   // Returns the card's actual height so the next card below can stack.
@@ -1878,11 +2472,24 @@ export class CampusScene extends Phaser.Scene {
     this.refreshSpeedButtons();
   }
 
+  private pausedHint?: Phaser.GameObjects.Text;
+
   private refreshSpeedButtons() {
     const s = Game.time.speed;
     this.btnPause.setTexture(s === 'paused' ? 'btn_pause_active' : 'btn_pause');
     this.btnPlay.setTexture(s === 'normal'  ? 'btn_play_active'  : 'btn_play');
     this.btnFast.setTexture(s === 'fast'    ? 'btn_fast_active'  : 'btn_fast');
+
+    // Quiet hint above the speed buttons while time is stopped — pairs with
+    // the Space shortcut so a paused game never reads as a frozen one.
+    if (!this.pausedHint) {
+      const { width, height } = this.scale;
+      this.pausedHint = this.add.text(width / 2, height - BAR_H - 14, 'Paused  ·  Space to resume', {
+        fontSize: '11px', color: '#c8a87a', fontFamily: 'Georgia, serif', fontStyle: 'italic',
+        stroke: '#0d0704', strokeThickness: 3,
+      }).setOrigin(0.5).setDepth(15).setVisible(false);
+    }
+    this.pausedHint.setVisible(s === 'paused');
   }
 
   // ── Project panel ─────────────────────────────────────────────────
@@ -1921,7 +2528,7 @@ export class CampusScene extends Phaser.Scene {
     for (const f of this.stageSegmentFills)  f.setVisible(true);
     this.progressPct.setVisible(true);
     this.cancelBtn.setVisible(true);
-    this.startWorkSparkles();
+    this.startWorkEmotes();
     // Initialize and show the per-stage axis gauge, and start the bubble
     // emitter. Both reset/respawn at every stage gate transition.
     const stage = project.stages[project.stages.length - 1];
@@ -1971,8 +2578,10 @@ export class CampusScene extends Phaser.Scene {
   private showStageGate(project: import('../models/Project').Project, nextStageKey: import('../models/Project').StageKey) {
     Game.time.setSpeed('paused');
     this.refreshSpeedButtons();
-    this.stopWorkSparkles();
+    this.stopWorkEmotes();
     this.stopBubbleEmitter();
+    // The team marks the finished stage before the player picks what's next.
+    this.celebrateWorkTeam(false);
     this.stageGateModal.show(project, nextStageKey, (scholarId, framing, emphasis) => {
       this.projectSystem.beginNextStage(scholarId, framing, emphasis);
     });
@@ -1989,7 +2598,7 @@ export class CampusScene extends Phaser.Scene {
     this.refreshActiveProjectInfo(project);
     this.showActiveWork(project);
     this.refreshScholarSprites();
-    this.startWorkSparkles();
+    this.startWorkEmotes();
     const stage = project.stages[project.stages.length - 1];
     if (stage) {
       this.resetStageGauge(stage.key);
@@ -2062,22 +2671,23 @@ export class CampusScene extends Phaser.Scene {
 
   private spawnProgressPop() {
     const id = this.activeScholarId;
-    if (!id || !(NAMED_SCHOLARS as readonly string[]).includes(id)) return;
-    const pos     = SCHOLAR_POS[id as NamedId];
+    if (!id) return;
+    const actor   = this.actors.get(id);
     const scholar = Game.state.scholars.find(s => s.id === id);
     const project = Game.state.activeProject;
-    if (!scholar || !project) return;
+    if (!actor || !scholar || !project) return;
+    const pos = { x: actor.container.x, y: actor.container.y };
     const topic = TOPICS.find(t => t.id === project.topicId);
     const skill = scholar.disciplines[topic?.name ?? ''] ?? 1;
     const pts   = Math.max(1, Math.round(skill / 2));
     const x     = pos.x + (Math.random() - 0.5) * 24;
-    const pop   = this.add.text(x, pos.y - 55, `+${pts}`, {
+    const pop   = this.add.text(x, pos.y - 108, `+${pts}`, {
       fontSize: '13px', color: '#d4a855', fontFamily: 'Georgia, serif',
       stroke: '#1a0d06', strokeThickness: 2,
     }).setOrigin(0.5, 1).setDepth(10);
     this.tweens.add({
       targets:  pop,
-      y:        pos.y - 90,
+      y:        pos.y - 140,
       alpha:    0,
       duration: 1100,
       ease:     'Sine.easeOut',
@@ -2090,6 +2700,10 @@ export class CampusScene extends Phaser.Scene {
   private showMidEvent(scholarName: string, text: string, choice?: MidEventChoice) {
     Game.time.setSpeed('paused');
     this.refreshSpeedButtons();
+
+    // The scholar at the heart of the event reacts in the courtyard.
+    const subject = Game.state.scholars.find(s => s.name === scholarName);
+    if (subject) this.playReact(subject.id);
 
     if (choice) {
       this.eventModal.choice<'push' | 'rest' | 'ignore'>({
@@ -2117,6 +2731,7 @@ export class CampusScene extends Phaser.Scene {
     this.updateProgressBar(1);
     Game.time.setSpeed('paused');
     this.refreshSpeedButtons();
+    this.celebrateWorkTeam(true);
 
     this.releaseModal.show(work, () => {
       Events.emit(GameEvents.WORK_RELEASED, { work });
@@ -2128,7 +2743,7 @@ export class CampusScene extends Phaser.Scene {
 
   private clearActiveProjectUI() {
     this.activeScholarId = undefined;
-    this.stopWorkSparkles();
+    this.stopWorkEmotes();
     this.stopBubbleEmitter();
     this.hideStageGauge();
     this.hideActiveWork();
@@ -2510,31 +3125,69 @@ export class CampusScene extends Phaser.Scene {
     });
   }
 
-  // Journal notes (trait reveals, talent reveals) — queued so multiple
-  // reveals on the same tick don't stomp each other.
-  private journalQueue: string[] = [];
-  private journalShowing = false;
+  // ── Chronicle feed ────────────────────────────────────────────────
+  // Flavor events (trait reveals, rival news, chemistry shifts, world
+  // events…) land here as non-blocking parchment notes on the right edge.
+  // The game keeps flowing — only genuine decisions pause time now.
+
+  private static readonly CHRONICLE_W = 312;
+  private static readonly CHRONICLE_X = 1280 - 312 - 14;
+  private static readonly CHRONICLE_Y = BAR_H + 12;
+  private static readonly CHRONICLE_MAX = 4;
 
   private queueJournalNote(flavor: string) {
-    this.journalQueue.push(flavor);
-    if (!this.journalShowing) this.drainJournalQueue();
+    Audio.playSfx('page_turn', { volume: 0.3 });
+
+    const w = CampusScene.CHRONICLE_W;
+    const text = this.add.text(12, 9, flavor, {
+      fontSize: '12px', color: '#e8d5b0', fontFamily: 'Georgia, serif',
+      wordWrap: { width: w - 24 }, lineSpacing: 3,
+    }).setOrigin(0, 0);
+    const h = Math.min(150, text.height + 18);
+    const bg = this.add.rectangle(0, 0, w, h, 0x14100a, 0.93)
+      .setOrigin(0, 0).setStrokeStyle(1, 0x3a2818, 0.9);
+    const accent = this.add.rectangle(0, 0, 3, h, 0xd4a855, 0.85).setOrigin(0, 0);
+
+    const card = this.add.container(CampusScene.CHRONICLE_X + 30, 0, [bg, accent, text])
+      .setDepth(25).setAlpha(0);
+    card.setData('h', h);
+
+    // Click to dismiss early.
+    bg.setInteractive({ useHandCursor: true });
+    bg.on('pointerdown', () => this.dismissChronicleCard(card));
+
+    this.chronicleCards.unshift(card);
+    while (this.chronicleCards.length > CampusScene.CHRONICLE_MAX) {
+      this.dismissChronicleCard(this.chronicleCards[this.chronicleCards.length - 1]);
+    }
+    this.layoutChronicle();
+
+    this.tweens.add({
+      targets: card, alpha: 1, x: CampusScene.CHRONICLE_X,
+      duration: 320, ease: 'Sine.easeOut',
+    });
+    // Longer notes stay readable longer.
+    const dwell = 6000 + Math.min(6000, flavor.length * 22);
+    this.time.delayedCall(dwell, () => this.dismissChronicleCard(card));
   }
 
-  private drainJournalQueue() {
-    const next = this.journalQueue.shift();
-    if (!next) { this.journalShowing = false; return; }
-    this.journalShowing = true;
-
-    Audio.playSfx('modal_open', { volume: 0.45 });
-    const prevSpeed = Game.time.speed;
-    Game.time.setSpeed('paused');
-    this.refreshSpeedButtons();
-
-    this.eventModal.show('A discovery', next, () => {
-      Game.time.setSpeed(prevSpeed);
-      this.refreshSpeedButtons();
-      this.drainJournalQueue();
+  private dismissChronicleCard(card: Phaser.GameObjects.Container) {
+    const idx = this.chronicleCards.indexOf(card);
+    if (idx < 0) return;
+    this.chronicleCards.splice(idx, 1);
+    this.tweens.add({
+      targets: card, alpha: 0, x: card.x + 24, duration: 280, ease: 'Sine.easeIn',
+      onComplete: () => card.destroy(),
     });
+    this.layoutChronicle();
+  }
+
+  private layoutChronicle() {
+    let y = CampusScene.CHRONICLE_Y;
+    for (const card of this.chronicleCards) {
+      this.tweens.add({ targets: card, y, duration: 260, ease: 'Sine.easeOut' });
+      y += (card.getData('h') as number) + 8;
+    }
   }
 
   private showRestlessToast(scholarId: string, reason: string) {
