@@ -15,6 +15,8 @@ through the typed event bus (`src/game/EventBus.ts`).
 - `npm run playtest [outDir]` — automated full loop: starts a real project,
   clicks through mid-events + stage gates + release modal like a player,
   verifies sales + save/reload resume
+- `node scripts/generate-ambience.mjs` — regenerate the synthesized
+  mountain-wind music loop (needs ffmpeg; `apt-get install -y ffmpeg`)
 
 `shots`/`playtest` need ad-hoc deps (not in package.json — Chromium ships
 via npm since external browser CDNs are blocked in the sandbox):

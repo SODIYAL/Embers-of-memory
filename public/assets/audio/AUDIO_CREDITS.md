@@ -21,3 +21,9 @@
   - `sfx/error.wav`
 
 Original source archive and license are kept under `Art/Audio Sources/`.
+
+## Synthesized Ambience
+
+- `music/campus_ambient.mp3` — mountain-wind ambience generated in-repo by
+  `scripts/generate-ambience.mjs` (procedural noise synthesis, no external
+  source material). Regenerate with `node scripts/generate-ambience.mjs`.
