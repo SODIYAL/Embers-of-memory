@@ -3,3 +3,10 @@ dist/
 .DS_Store
 *.local
 screenshots/
+
+# Harness / audit output (regenerable — never commit)
+out-*/
+asset-audit-contact-sheets/
+asset-dimensions-audit.csv
+ASSET_SPLICE_AUDIT.md
+ASSET_TODOS.md

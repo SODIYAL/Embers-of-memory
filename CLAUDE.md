@@ -44,8 +44,7 @@ backgrounds anymore — scenes are composed from the pixel kit:
   buildings, props) or generated output. Regenerate with `assets:gen` +
   `assets:ui`; both are deterministic (byte-identical reruns).
 - `art-src/` holds sources for processed assets (portraits, icons,
-  workstations) and `art-src/retired/` the old painterly art. Never load
-  from art-src at runtime.
+  workstations). Never load from art-src at runtime.
 - Generic scholars/students are palette-swapped from the yildiz sheets in
   `gen-pixel-assets.mjs` — don't hand-edit those PNGs.
 
