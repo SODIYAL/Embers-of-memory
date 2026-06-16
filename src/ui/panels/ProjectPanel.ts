@@ -3,7 +3,7 @@ import { TOPICS } from '../../data/topics';
 import { FORMATS } from '../../data/formats';
 import { Game } from '../../game/GameManager';
 import { Events, GameEvents } from '../../game/EventBus';
-import { STAGE_ORDER } from '../../models/Project';
+import { STAGE_ORDER, PRIORITY_POOL } from '../../models/Project';
 import type { Scholar } from '../../models/Scholar';
 import type { StageRecord } from '../../models/Project';
 import { STAGE_AXES, AXIS_HINTS, EMPHASIS_POINTS } from '../../data/stageEmphasis';
@@ -29,7 +29,7 @@ const PRIORITY_HINTS: Record<string, { stage: string; lean: string }> = {
   Propaganda:    { stage: 'Refinement', lean: 'serves the order' },
 };
 
-const POOL = 10;
+const POOL = PRIORITY_POOL;
 const PRIORITY_MAX = 5; // most points allowed on a single priority
 // Stage 1 auto-assigns every other available scholar as an assistant, so
 // this cap is only a defensive guard for the data model.
@@ -452,50 +452,44 @@ export class ProjectPanel {
             <span class="pp-pool-label">point${remaining === 1 ? '' : 's'} left</span>
           </div>
         </div>
-        <div class="pp-emphasis-grid">
-          ${STAGE_AXES.research.map(axis => this.emphasisAxisHTML(axis)).join('')}
+        <div class="pp-pips">
+          ${STAGE_AXES.research.map(axis => this.emphasisCardHTML(axis)).join('')}
         </div>
       </div>
     `;
   }
 
-  private emphasisAxisHTML(axis: string): string {
+  private emphasisCardHTML(axis: string): string {
     const val = this.researchEmphasis[axis] ?? 0;
+    const spent = STAGE_AXES.research.reduce((s, a) => s + (this.researchEmphasis[a] ?? 0), 0);
+    const canAdd = spent < EMPHASIS_POINTS && val < EMPHASIS_POINTS;
+    const pips = Array.from({ length: EMPHASIS_POINTS }, (_, i) =>
+      `<span class="pp-pip${i < val ? ' on' : ''}" data-axis="${axis}" data-i="${i + 1}"></span>`
+    ).join('');
     return `
-      <div class="pp-emph-card" data-axis="${axis}">
-        <div class="pp-emph-card-head">
-          <span class="pp-emph-card-name">${axis}</span>
-          <span class="pp-emph-card-val" id="pp-emph-val-${axis}">${val}</span>
+      <div class="pp-pip-card${val > 0 ? ' active' : ''}" data-axis="${axis}">
+        <div class="pp-pip-info">
+          <span class="pp-pip-name">${axis}</span>
+          <span class="pp-pip-hint">${AXIS_HINTS[axis] ?? ''}</span>
         </div>
-        <div class="pp-emph-card-hint">${AXIS_HINTS[axis] ?? ''}</div>
-        <input type="range" min="0" max="${EMPHASIS_POINTS}" step="1" value="${val}" class="pp-slider pp-emph-slider" data-axis="${axis}" />
+        <button class="pp-pip-btn pp-pip-minus" data-axis="${axis}" ${val <= 0 ? 'disabled' : ''} aria-label="Less ${axis}">−</button>
+        <div class="pp-pip-track">${pips}</div>
+        <button class="pp-pip-btn pp-pip-plus" data-axis="${axis}" ${canAdd ? '' : 'disabled'} aria-label="More ${axis}">+</button>
       </div>
     `;
   }
 
-  private onEmphasisInput(slider: HTMLInputElement) {
-    const axis = slider.dataset.axis!;
-    const requested = Number(slider.value);
+  // Set one research-emphasis axis, clamped to the EMPHASIS_POINTS pool, then
+  // re-render the step.
+  private setEmphasis(axis: string, value: number) {
     const otherTotal = STAGE_AXES.research
       .filter(a => a !== axis)
       .reduce((s, a) => s + (this.researchEmphasis[a] ?? 0), 0);
     const maxAllowed = Math.min(EMPHASIS_POINTS, EMPHASIS_POINTS - otherTotal);
-    const accepted = Math.min(requested, Math.max(0, maxAllowed));
-
+    const accepted = Math.max(0, Math.min(value, maxAllowed));
+    if (accepted === (this.researchEmphasis[axis] ?? 0)) return;
     this.researchEmphasis[axis] = accepted;
-    slider.value = String(accepted);
-    this.paintSliderFill(slider);
-
-    const valEl = this.el!.querySelector(`#pp-emph-val-${axis}`);
-    if (valEl) valEl.textContent = String(accepted);
-    this.refreshEmphasisCounter();
-  }
-
-  private refreshEmphasisCounter() {
-    const spent = STAGE_AXES.research.reduce((s, a) => s + (this.researchEmphasis[a] ?? 0), 0);
-    const remaining = EMPHASIS_POINTS - spent;
-    const numEl = this.el!.querySelector('#pp-emph-num');
-    if (numEl) numEl.textContent = String(remaining);
+    this.renderStep();
   }
 
   // Portrait: PNG for the 5 founders, initial-letter circle for procedural hires.
@@ -616,17 +610,28 @@ export class ProjectPanel {
           });
         });
         break;
-      case 5:
-        el.querySelectorAll<HTMLInputElement>('.pp-emph-slider').forEach(slider => {
-          this.paintSliderFill(slider);
-          slider.addEventListener('input', () => this.onEmphasisInput(slider));
-        });
+      case 5: {
+        // Same pip cards as step 3, over the research-emphasis pool.
+        const bump = (axis: string, delta: number) =>
+          this.setEmphasis(axis, (this.researchEmphasis[axis] ?? 0) + delta);
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-plus').forEach(btn =>
+          btn.addEventListener('click', () => bump(btn.dataset.axis!, +1)));
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-minus').forEach(btn =>
+          btn.addEventListener('click', () => bump(btn.dataset.axis!, -1)));
+        el.querySelectorAll<HTMLElement>('.pp-pip').forEach(pip =>
+          pip.addEventListener('click', () => {
+            const axis = pip.dataset.axis!;
+            const i = Number(pip.dataset.i); // 1-based pip position
+            const current = this.researchEmphasis[axis] ?? 0;
+            this.setEmphasis(axis, i === current ? i - 1 : i);
+          }));
         break;
+      }
     }
   }
 
   // Set one priority to `value`, clamped to [0, PRIORITY_MAX] and to whatever
-  // the shared 10-point pool still allows, then re-render the step.
+  // the shared point pool still allows, then re-render the step.
   private setPriority(key: string, value: number) {
     const otherTotal = Object.entries(this.priorities)
       .filter(([k]) => k !== key)
@@ -636,16 +641,6 @@ export class ProjectPanel {
     if (accepted === (this.priorities[key] ?? 0)) return;
     this.priorities[key] = accepted;
     this.renderStep();
-  }
-
-  // Paints the slider's filled portion via CSS variable so it shows the
-  // current value visually (without us writing a custom track element).
-  private paintSliderFill(slider: HTMLInputElement) {
-    const min = Number(slider.min);
-    const max = Number(slider.max);
-    const v   = Number(slider.value);
-    const pct = ((v - min) / (max - min)) * 100;
-    slider.style.setProperty('--fill', `${pct}%`);
   }
 
   private poolRemaining(): number {

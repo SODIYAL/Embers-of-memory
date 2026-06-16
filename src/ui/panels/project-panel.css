@@ -395,46 +395,6 @@
   font-style: italic;
 }
 
-/* Stage emphasis (step 5) */
-.pp-emphasis-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-top: 8px;
-}
-.pp-emph-card {
-  background: #1f130a;
-  border: 1px solid #2e1c0c;
-  border-radius: 3px;
-  padding: 12px 14px;
-}
-.pp-emph-card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 4px;
-}
-.pp-emph-card-name {
-  font-size: 13px;
-  color: #e8d5b0;
-  letter-spacing: 0.04em;
-}
-.pp-emph-card-val {
-  font-size: 18px;
-  color: #d4a855;
-  font-weight: bold;
-}
-.pp-emph-card-hint {
-  font-size: 11px;
-  color: #6a4828;
-  font-style: italic;
-  margin-bottom: 10px;
-  min-height: 30px;
-  line-height: 1.3;
-}
-.pp-emph-slider {
-  width: 100%;
-}
 .pp-tile:hover { background: #2d1a0e; border-color: #4e2e18; }
 .pp-tile.selected {
   background: #3a2010;
@@ -536,36 +496,6 @@
 }
 .pp-pip-btn:hover:not(:disabled) { background: #3a2412; color: #f0dcb4; }
 .pp-pip-btn:disabled { opacity: 0.3; cursor: default; }
-
-.pp-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 4px;
-  background: linear-gradient(to right, #5c3418 var(--fill, 0%), #2a1808 var(--fill, 0%));
-  border-radius: 2px;
-  outline: none;
-  cursor: pointer;
-}
-.pp-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #d4a855;
-  border: 1px solid #1a0d06;
-  cursor: pointer;
-  box-shadow: 0 0 4px rgba(212, 168, 85, 0.4);
-}
-.pp-slider::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #d4a855;
-  border: 1px solid #1a0d06;
-  cursor: pointer;
-}
 
 /* Step footer */
 .pp-step-footer {

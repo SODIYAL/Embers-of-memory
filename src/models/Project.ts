@@ -4,6 +4,12 @@ export type StageKey = 'research' | 'drafting' | 'refinement';
 
 export const STAGE_ORDER: readonly StageKey[] = ['research', 'drafting', 'refinement'];
 
+// Points the player distributes across a work's priorities at setup. Shared by
+// the setup UI (ProjectPanel) and the quality math (ProjectSystem) so the
+// per-stage emphasis bonus stays normalized to the pool — change it in one
+// place and both stay in step.
+export const PRIORITY_POOL = 12;
+
 export const STAGE_INFO: Record<StageKey, {
   label: string;
   flavor: string;

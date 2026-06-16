@@ -9,7 +9,7 @@ import { IdeologySystem } from './IdeologySystem';
 import { WorldSystem } from './WorldSystem';
 import { SalesSystem } from './SalesSystem';
 import type { Project, StageRecord } from '../models/Project';
-import { STAGE_ORDER, STAGE_INFO } from '../models/Project';
+import { STAGE_ORDER, STAGE_INFO, PRIORITY_POOL } from '../models/Project';
 import { normalizeEmphasis, getIdealMix, matchScore, matchSliceModifier } from '../data/stageEmphasis';
 import type { Scholar } from '../models/Scholar';
 import type { Work, QualityBreakdown } from '../models/Work';
@@ -246,7 +246,7 @@ export class ProjectSystem {
     for (const axis of info.emphasizes) {
       emphasis += project.priorities[axis] ?? 0;
     }
-    slice += (emphasis / 10) * 0.05;
+    slice += (emphasis / PRIORITY_POOL) * 0.05;
 
     // Per-stage emphasis vs hidden ideal mix. Player allocated points across
     // this stage's 3 axes; we score how closely they match the recipe for
