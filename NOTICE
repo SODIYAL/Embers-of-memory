@@ -1,0 +1,29 @@
+Embers of Memory — Third-Party Notices
+======================================
+
+The MIT License in LICENSE covers the source code of this project.
+
+The bundled assets and dependencies below are NOT covered by that license and
+retain their own terms.
+
+Fonts
+-----
+- Alagard (public/fonts/alagard.ttf)
+  Pixel display font by Hewett Tsoi. Included under the font's own license;
+  review the author's distribution terms before redistributing it.
+
+Engine & libraries
+------------------
+- Phaser 4 (https://phaser.io) — MIT License.
+- Remaining npm dependencies retain their respective licenses (see each
+  package under node_modules / the lockfile).
+
+Art & audio
+-----------
+- Pixel art, character sprites (including the "yildiz" sheets used as the base
+  for palette-swapped generic scholars), and the synthesized ambience loop are
+  shipped with the project. If any of these originate from an external source,
+  confirm its license and attribution before redistributing.
+
+If you are the rights holder for any bundled asset and believe attribution is
+missing or incorrect, please open an issue.

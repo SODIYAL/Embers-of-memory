@@ -136,7 +136,11 @@ All progress is stored in the browser's `localStorage`. Saves are **version-gate
 
 ## Credits & license
 
-- Display font: **Alagard** by Hewett Tsoi.
-- Generic scholar/student sprites are palette-swapped from the **yildiz** character sheets.
+The source code is released under the **MIT License** — see [LICENSE](LICENSE).
 
-No license has been chosen yet. Until one is added, all rights are reserved by the author — if you intend to use, fork, or redistribute this project, please add a `LICENSE` file or get in touch first.
+Bundled assets and dependencies are **not** covered by the MIT license and keep
+their own terms (see [NOTICE](NOTICE)):
+
+- Display font: **Alagard** by Hewett Tsoi.
+- Engine: **Phaser 4** (MIT).
+- Generic scholar/student sprites are palette-swapped from the **yildiz** character sheets.
