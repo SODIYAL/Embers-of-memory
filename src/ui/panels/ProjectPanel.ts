@@ -8,12 +8,29 @@ import type { Scholar } from '../../models/Scholar';
 import type { StageRecord } from '../../models/Project';
 import { STAGE_AXES, AXIS_HINTS, EMPHASIS_POINTS } from '../../data/stageEmphasis';
 
+// Grouped by the production stage each priority lifts (see STAGE_INFO in
+// Project.ts) so the pip cards read top-to-bottom in stage order.
 const PRIORITY_KEYS = [
-  'Accuracy', 'Beauty', 'Accessibility',
-  'Innovation', 'Spirituality', 'Preservation', 'Propaganda',
+  'Accuracy', 'Innovation', 'Preservation', // Research
+  'Beauty', 'Accessibility', 'Spirituality', // Drafting
+  'Propaganda',                              // Refinement
 ] as const;
 
+// Per-priority flavor shown on each pip card: which stage's quality it lifts
+// and the ideological lean each point imparts. Kept in sync with STAGE_INFO
+// (Project.ts) and PRIORITY_IMPRINT (data/ideologyContributions.ts).
+const PRIORITY_HINTS: Record<string, { stage: string; lean: string }> = {
+  Accuracy:      { stage: 'Research',   lean: 'empirical' },
+  Innovation:    { stage: 'Research',   lean: 'progressive' },
+  Preservation:  { stage: 'Research',   lean: 'guards the old ways' },
+  Beauty:        { stage: 'Drafting',   lean: 'classical' },
+  Accessibility: { stage: 'Drafting',   lean: 'for the people' },
+  Spirituality:  { stage: 'Drafting',   lean: 'devout' },
+  Propaganda:    { stage: 'Refinement', lean: 'serves the order' },
+};
+
 const POOL = 10;
+const PRIORITY_MAX = 5; // most points allowed on a single priority
 // Stage 1 auto-assigns every other available scholar as an assistant, so
 // this cap is only a defensive guard for the data model.
 export const MAX_ASSISTANTS = 7;
@@ -278,26 +295,35 @@ export class ProjectPanel {
     return `
       <div class="pp-step pp-step-priorities">
         <div class="pp-priorities-head">
-          <p class="pp-step-hint">Spend ${POOL} points across these qualities. Each lifts that aspect of the finished work.</p>
+          <p class="pp-step-hint">Spend ${POOL} points to shape the work. Each point lifts that quality — and nudges your institution's character. Spend as few or as many as you like.</p>
           <div class="pp-pool-indicator">
             <span class="pp-pool-num" id="pp-pool-num">${remaining}</span>
             <span class="pp-pool-label">point${remaining === 1 ? '' : 's'} left</span>
           </div>
         </div>
-        <div class="pp-sliders">
-          ${PRIORITY_KEYS.map(k => this.prioritySliderHTML(k)).join('')}
+        <div class="pp-pips">
+          ${PRIORITY_KEYS.map(k => this.priorityCardHTML(k)).join('')}
         </div>
       </div>
     `;
   }
 
-  private prioritySliderHTML(key: string): string {
+  private priorityCardHTML(key: string): string {
     const val = this.priorities[key] ?? 0;
+    const hint = PRIORITY_HINTS[key];
+    const canAdd = this.poolRemaining() > 0 && val < PRIORITY_MAX;
+    const pips = Array.from({ length: PRIORITY_MAX }, (_, i) =>
+      `<span class="pp-pip${i < val ? ' on' : ''}" data-key="${key}" data-i="${i + 1}"></span>`
+    ).join('');
     return `
-      <div class="pp-slider-row" data-key="${key}">
-        <span class="pp-slider-label">${key}</span>
-        <input type="range" min="0" max="5" step="1" value="${val}" class="pp-slider" data-key="${key}" />
-        <span class="pp-slider-val" id="pp-sv-${key}">${val}</span>
+      <div class="pp-pip-card${val > 0 ? ' active' : ''}" data-key="${key}">
+        <div class="pp-pip-info">
+          <span class="pp-pip-name">${key}</span>
+          <span class="pp-pip-hint">${hint ? `${hint.stage} · ${hint.lean}` : ''}</span>
+        </div>
+        <button class="pp-pip-btn pp-pip-minus" data-key="${key}" ${val <= 0 ? 'disabled' : ''} aria-label="Less ${key}">−</button>
+        <div class="pp-pip-track">${pips}</div>
+        <button class="pp-pip-btn pp-pip-plus" data-key="${key}" ${canAdd ? '' : 'disabled'} aria-label="More ${key}">+</button>
       </div>
     `;
   }
@@ -562,12 +588,24 @@ export class ProjectPanel {
           });
         });
         break;
-      case 3:
-        el.querySelectorAll<HTMLInputElement>('.pp-slider').forEach(slider => {
-          this.paintSliderFill(slider);
-          slider.addEventListener('input', () => this.onSliderInput(slider));
-        });
+      case 3: {
+        // Pip cards: +/− buttons and the pips themselves spend from the pool.
+        const bump = (key: string, delta: number) =>
+          this.setPriority(key, (this.priorities[key] ?? 0) + delta);
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-plus').forEach(btn =>
+          btn.addEventListener('click', () => bump(btn.dataset.key!, +1)));
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-minus').forEach(btn =>
+          btn.addEventListener('click', () => bump(btn.dataset.key!, -1)));
+        el.querySelectorAll<HTMLElement>('.pp-pip').forEach(pip =>
+          pip.addEventListener('click', () => {
+            const key = pip.dataset.key!;
+            const i = Number(pip.dataset.i); // 1-based pip position
+            // Click the highest lit pip to clear it; otherwise fill up to here.
+            const current = this.priorities[key] ?? 0;
+            this.setPriority(key, i === current ? i - 1 : i);
+          }));
         break;
+      }
       case 4:
         el.querySelectorAll<HTMLElement>('.pp-scholar-card').forEach(card => {
           card.addEventListener('click', () => {
@@ -587,27 +625,17 @@ export class ProjectPanel {
     }
   }
 
-  // Slider input: enforce the shared 10-point pool. If the new value would
-  // overspend, clamp it back to the maximum that fits.
-  private onSliderInput(slider: HTMLInputElement) {
-    const key = slider.dataset.key!;
-    const requested = Number(slider.value);
-    const current = this.priorities[key] ?? 0;
+  // Set one priority to `value`, clamped to [0, PRIORITY_MAX] and to whatever
+  // the shared 10-point pool still allows, then re-render the step.
+  private setPriority(key: string, value: number) {
     const otherTotal = Object.entries(this.priorities)
       .filter(([k]) => k !== key)
       .reduce((sum, [, v]) => sum + v, 0);
-    const maxAllowed = Math.min(5, POOL - otherTotal);
-    const accepted = Math.min(requested, Math.max(0, maxAllowed));
-
+    const maxAllowed = Math.min(PRIORITY_MAX, POOL - otherTotal);
+    const accepted = Math.max(0, Math.min(value, maxAllowed));
+    if (accepted === (this.priorities[key] ?? 0)) return;
     this.priorities[key] = accepted;
-    slider.value = String(accepted);
-    this.paintSliderFill(slider);
-
-    // Update just the dependent labels — no full re-render so the slider
-    // doesn't lose focus while dragging.
-    const valEl = this.el!.querySelector(`#pp-sv-${key}`);
-    if (valEl) valEl.textContent = String(accepted);
-    if (current !== accepted) this.refreshPoolCounter();
+    this.renderStep();
   }
 
   // Paints the slider's filled portion via CSS variable so it shows the
@@ -618,14 +646,6 @@ export class ProjectPanel {
     const v   = Number(slider.value);
     const pct = ((v - min) / (max - min)) * 100;
     slider.style.setProperty('--fill', `${pct}%`);
-  }
-
-  private refreshPoolCounter() {
-    const remaining = this.poolRemaining();
-    const numEl = this.el!.querySelector('#pp-pool-num');
-    if (numEl) numEl.textContent = String(remaining);
-    const labelEl = this.el!.querySelector('.pp-pool-label');
-    if (labelEl) labelEl.textContent = `point${remaining === 1 ? '' : 's'} left`;
   }
 
   private poolRemaining(): number {

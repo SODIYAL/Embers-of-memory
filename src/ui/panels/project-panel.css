@@ -474,19 +474,68 @@
 .pp-pool-num   { font-size: 22px; color: #d4a855; }
 .pp-pool-label { font-size: 11px; color: #8a6848; letter-spacing: 0.06em; }
 
-.pp-sliders {
+/* Step 3 — tap-to-spend priority pip cards */
+.pp-pips {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
 }
-.pp-slider-row {
+.pp-pip-card {
   display: grid;
-  grid-template-columns: 130px 1fr 24px;
+  grid-template-columns: 1fr auto auto auto;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #1f1206;
+  border: 1px solid #3a2412;
+  border-radius: 4px;
+  transition: border-color 0.12s, background 0.12s;
 }
-.pp-slider-label { font-size: 13px; color: #c8a87a; }
-.pp-slider-val   { font-size: 14px; color: #e8d5b0; text-align: right; }
+.pp-pip-card.active {
+  background: #271708;
+  border-color: #5a3820;
+}
+.pp-pip-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pp-pip-name { font-size: 14px; color: #c8a87a; }
+.pp-pip-card.active .pp-pip-name { color: #f0dcb4; }
+.pp-pip-hint { font-size: 11px; color: #8a6848; letter-spacing: 0.02em; }
+
+.pp-pip-track { display: flex; gap: 6px; align-items: center; }
+.pp-pip {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #2a1808;
+  border: 1px solid #4a3018;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s, transform 0.05s;
+}
+.pp-pip:hover { border-color: #8a5a2c; }
+.pp-pip.on {
+  background: #d4a855;
+  border-color: #e8c87a;
+  box-shadow: 0 0 4px rgba(212, 168, 85, 0.4);
+}
+.pp-pip.on:active { transform: scale(0.9); }
+
+.pp-pip-btn {
+  width: 26px;
+  height: 26px;
+  font-size: 18px;
+  line-height: 1;
+  color: #d4a855;
+  background: #2a1808;
+  border: 1px solid #5a3820;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: Georgia, serif;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, color 0.1s;
+}
+.pp-pip-btn:hover:not(:disabled) { background: #3a2412; color: #f0dcb4; }
+.pp-pip-btn:disabled { opacity: 0.3; cursor: default; }
 
 .pp-slider {
   -webkit-appearance: none;
