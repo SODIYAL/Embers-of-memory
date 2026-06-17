@@ -1,12 +1,7 @@
-// Central audio service. SFX are pre-loaded in BootScene; this wrapper
-// gives the rest of the codebase a one-liner to play them, plus a music
-// layer with cross-fade, and persistent mute/volume state.
-//
-// Phaser's sound manager is scene-scoped by default; we route through the
-// game-level manager (this.sound.game.sound) so audio persists across
-// scene transitions. The service is initialized from a scene's create().
-
-import Phaser from 'phaser';
+// Central audio service. A thin, framework-free wrapper over HTMLAudioElement:
+// a one-liner to play SFX, a music layer with manual cross-fade, and
+// persistent mute/volume state. Everything degrades silently if an asset is
+// missing, so the game runs fine before (or without) audio files on disk.
 
 export type SfxKey =
   | 'ui_click' | 'ui_hover' | 'ui_select' | 'ui_back'
@@ -15,6 +10,12 @@ export type SfxKey =
   | 'coin_gain' | 'page_turn' | 'quill_scratch' | 'error';
 
 const SETTINGS_KEY = 'embers_audio_v1';
+
+const SFX_URL = (key: SfxKey) => `assets/audio/sfx/${key}.wav`;
+// Named music tracks → file URLs.
+const MUSIC_URLS: Record<string, string> = {
+  music_campus: 'assets/audio/music/campus_ambient.mp3',
+};
 
 interface AudioSettings {
   muted: boolean;
@@ -29,14 +30,14 @@ const DEFAULT_SETTINGS: AudioSettings = {
 };
 
 class AudioService {
-  private manager?: Phaser.Sound.BaseSoundManager;
   private settings: AudioSettings = { ...DEFAULT_SETTINGS };
-  private currentMusic?: Phaser.Sound.BaseSound;
+  // One reusable base element per SFX key, cloned on play so overlapping
+  // sounds don't cut each other off.
+  private sfxBuffers: Partial<Record<SfxKey, HTMLAudioElement>> = {};
+  private currentMusic?: HTMLAudioElement;
   private currentMusicKey?: string;
-  // Throttle hover SFX so rapid pointermoves don't machine-gun the speakers
+  private musicFadeTimer?: ReturnType<typeof setInterval>;
   private lastHoverAt = 0;
-  // Throttle a few high-frequency SFX so cascades (e.g. multiple skill-ups)
-  // don't stack into noise.
   private lastPlayAt: Partial<Record<SfxKey, number>> = {};
   private readonly throttleMs: Partial<Record<SfxKey, number>> = {
     ui_hover: 80,
@@ -45,9 +46,20 @@ class AudioService {
     page_turn: 400,
   };
 
-  init(scene: Phaser.Scene) {
-    this.manager = scene.sound;
+  // Kept for API compatibility with the old Phaser version; safe to call
+  // (warms the SFX cache) or skip entirely.
+  init() {
     this.loadSettings();
+    for (const key of Object.keys(this.throttleMs) as SfxKey[]) this.warm(key);
+  }
+
+  private warm(key: SfxKey) {
+    if (this.sfxBuffers[key]) return;
+    try {
+      const el = new window.Audio(SFX_URL(key));
+      el.preload = 'auto';
+      this.sfxBuffers[key] = el;
+    } catch { /* ignore */ }
   }
 
   // ── Settings persistence ──────────────────────────────────────────
@@ -75,13 +87,7 @@ class AudioService {
   setMuted(muted: boolean) {
     this.settings.muted = muted;
     this.saveSettings();
-    if (this.currentMusic) {
-      if ('setVolume' in this.currentMusic) {
-        (this.currentMusic as Phaser.Sound.WebAudioSound).setVolume(
-          muted ? 0 : this.settings.musicVolume,
-        );
-      }
-    }
+    if (this.currentMusic) this.currentMusic.volume = muted ? 0 : this.settings.musicVolume;
   }
 
   toggleMute(): boolean {
@@ -91,9 +97,8 @@ class AudioService {
 
   // ── SFX ────────────────────────────────────────────────────────────
 
-  playSfx(key: SfxKey, opts: { volume?: number; rate?: number; detune?: number } = {}) {
-    if (!this.manager || this.settings.muted) return;
-    // Throttle per-key
+  playSfx(key: SfxKey, opts: { volume?: number; rate?: number } = {}) {
+    if (this.settings.muted) return;
     const throttle = this.throttleMs[key];
     if (throttle) {
       const now = performance.now();
@@ -102,18 +107,17 @@ class AudioService {
       this.lastPlayAt[key] = now;
     }
     try {
-      this.manager.play(key, {
-        volume: (opts.volume ?? 1) * this.settings.sfxVolume,
-        rate:   opts.rate ?? 1,
-        detune: opts.detune ?? 0,
-      });
-    } catch {
-      // Sound may not be decoded yet on first call — silent fail is fine
-    }
+      this.warm(key);
+      // Clone so rapid repeats can overlap; falls back to a fresh element.
+      const base = this.sfxBuffers[key];
+      const el = (base?.cloneNode(true) as HTMLAudioElement) ?? new window.Audio(SFX_URL(key));
+      el.volume = Math.max(0, Math.min(1, (opts.volume ?? 1) * this.settings.sfxVolume));
+      if (opts.rate) el.playbackRate = opts.rate;
+      void el.play().catch(() => { /* asset missing / not yet allowed — fine */ });
+    } catch { /* ignore */ }
   }
 
-  // Special-cased: hover has its own throttle window since pointermove
-  // can fire dozens of times per second across the UI.
+  // Hover has its own throttle window since pointermove fires rapidly.
   playHover() {
     const now = performance.now();
     if (now - this.lastHoverAt < 80) return;
@@ -123,84 +127,59 @@ class AudioService {
 
   // ── Music (background loop) ───────────────────────────────────────
 
-  // Cross-fade to a new music key. If key is undefined, fades out.
-  // Music tracks must be pre-loaded by the scene that calls this. If the
-  // key isn't loaded (no asset yet), we silently no-op so this can be
-  // wired before audio assets exist.
+  // Cross-fade to a new music key. If key is undefined, fades out. No-ops if
+  // the track is already playing or the URL is unknown.
   playMusic(key: string | undefined, opts: { fadeMs?: number } = {}) {
-    if (!this.manager) return;
     const fadeMs = opts.fadeMs ?? 1200;
-
     if (this.currentMusicKey === key) return;
 
-    // Fade out current
-    if (this.currentMusic) {
-      const oldMusic = this.currentMusic;
-      const oldKey = this.currentMusicKey;
-      // Phaser's WebAudioSound supports volume tween via scene tweens; we
-      // use a manual interval to avoid coupling to a specific scene's tweens.
-      this.fadeSound(oldMusic, fadeMs, 0, () => {
-        oldMusic.stop();
-        oldMusic.destroy();
-        if (this.currentMusicKey === oldKey) {
-          // We were the last one out and nothing started after us
-        }
-      });
-      this.currentMusic = undefined;
-      this.currentMusicKey = undefined;
-    }
-
+    this.stopMusic(fadeMs);
     if (!key) return;
 
-    // Check whether the key is loaded before attempting to play
-    if (!this.manager.game.cache.audio.has(key)) return;
+    const url = MUSIC_URLS[key];
+    if (!url) return;
 
     try {
-      const music = this.manager.add(key, {
-        loop: true,
-        volume: 0,
-      });
-      music.play();
+      const music = new window.Audio(url);
+      music.loop = true;
+      music.volume = 0;
       this.currentMusic = music;
       this.currentMusicKey = key;
+      void music.play().catch(() => { /* autoplay blocked — will retry on next gesture */ });
       const target = this.settings.muted ? 0 : this.settings.musicVolume;
-      this.fadeSound(music, fadeMs, target);
-    } catch {
-      // ignore
-    }
+      this.fade(music, fadeMs, target);
+    } catch { /* ignore */ }
   }
 
   stopMusic(fadeMs: number = 800) {
-    if (!this.currentMusic) return;
     const old = this.currentMusic;
-    this.fadeSound(old, fadeMs, 0, () => {
-      old.stop();
-      old.destroy();
-    });
     this.currentMusic = undefined;
     this.currentMusicKey = undefined;
+    if (!old) return;
+    this.fade(old, fadeMs, 0, () => { try { old.pause(); } catch { /* ignore */ } });
   }
 
-  private fadeSound(sound: Phaser.Sound.BaseSound, durationMs: number, target: number, onDone?: () => void) {
-    if (!('setVolume' in sound)) { onDone?.(); return; }
-    const ws = sound as Phaser.Sound.WebAudioSound;
-    const start = ws.volume;
+  private fade(el: HTMLAudioElement, durationMs: number, target: number, onDone?: () => void) {
+    if (this.musicFadeTimer && el === this.currentMusic) {
+      clearInterval(this.musicFadeTimer);
+      this.musicFadeTimer = undefined;
+    }
+    const start = el.volume;
     const steps = Math.max(1, Math.round(durationMs / 30));
     let step = 0;
-    const tick = () => {
+    const timer = setInterval(() => {
       step++;
       const t = step / steps;
-      try { ws.setVolume(start + (target - start) * t); } catch { /* destroyed */ }
+      try { el.volume = Math.max(0, Math.min(1, start + (target - start) * t)); } catch { /* ignore */ }
       if (step >= steps) {
+        clearInterval(timer);
+        if (this.musicFadeTimer === timer) this.musicFadeTimer = undefined;
         onDone?.();
-        return;
       }
-      setTimeout(tick, 30);
-    };
-    tick();
+    }, 30);
+    if (el === this.currentMusic) this.musicFadeTimer = timer;
   }
 }
 
-// Singleton — the game has one audio service. Imported across systems and
-// scenes; initialized once from MenuScene.create().
+// Singleton — the game has one audio service.
 export const Audio = new AudioService();

@@ -12,16 +12,14 @@
         font-display: block;
       }
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      body { background: #1a0f0a; overflow: hidden; }
-      #game-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; }
-      /* Crisp texels even if the canvas lands on a non-snapped size. */
-      #game-container canvas { image-rendering: pixelated; }
-      #ui-layer { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; }
+      html, body { height: 100%; }
+      /* The game UI lives in #app; panels and modals overlay in #ui-layer. */
+      #ui-layer { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 100; }
       #ui-layer > * { pointer-events: auto; }
     </style>
   </head>
   <body>
-    <div id="game-container"></div>
+    <div id="app"></div>
     <div id="ui-layer"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

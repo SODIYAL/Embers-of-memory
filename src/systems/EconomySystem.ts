@@ -10,9 +10,34 @@ import { pick, chance } from '../utils/Random';
 import type { MajorPatron, MinorCommission } from '../models/Economy';
 import type { Work } from '../models/Work';
 
-// Operational cost scales gently — 4 gold flat + 2 per scholar per month.
-const OPS_BASE = 4;
-const OPS_PER_SCHOLAR = 2;
+// Operational cost scales gently — a small flat overhead plus a little per
+// scholar. Kept deliberately low so the fledgling monastery isn't bled dry
+// before its first work has a chance to sell.
+const OPS_BASE = 2;
+const OPS_PER_SCHOLAR = 1;
+
+// Donations — small, unpredictable gifts that ease the early burn. Roughly a
+// coin-flip each month; the amount is modest and scales gently with renown so
+// it stays a pleasant trickle, never a substitute for real income.
+const DONATION_CHANCE_PER_MONTH = 0.6;
+const DONATION_MIN = 10;
+const DONATION_MAX = 30;
+const DONATION_PRESTIGE_SCALE = 0.15; // extra gold per point of prestige…
+const DONATION_PRESTIGE_CAP = 30;     // …capped so renown never makes it a windfall
+
+// Rotating pool of donation sources — drawn at random each time, the way minor
+// commissions draw patron names. The flavor is the narrative; the gold amount
+// is appended by the UI handler.
+const DONATION_FLAVORS: Array<{ source: string; flavor: string }> = [
+  { source: 'pilgrims',           flavor: 'A band of pilgrims, grateful for a night\'s shelter, leaves an offering at the gate.' },
+  { source: 'townsfolk',          flavor: 'The townsfolk pass a collection plate at market and send the proceeds up the hill.' },
+  { source: 'a devout visitor',   flavor: 'A devout visitor, moved by the hush of the scriptorium, presses a purse into the steward\'s hands.' },
+  { source: 'alms left in the chapel', flavor: 'Coins left as alms in the chapel box are counted and added to the treasury.' },
+  { source: 'a grateful reader',  flavor: 'A reader who treasures one of your works sends an unsolicited gift of thanks.' },
+  { source: 'a passing noble',    flavor: 'A noble passing through admires the institution and, on a whim, leaves a small endowment.' },
+  { source: 'the parish',         flavor: 'The local parish, fond of your scholars, forwards a share of its tithe.' },
+  { source: 'a returning student',flavor: 'A former student, now making their way in the world, repays the institution with a modest gift.' },
+];
 
 // Facility upkeep — 25% of the facility's build cost per built tier per year, monthly slice.
 // Concretely: monthly upkeep = buildCost * 0.25 / 12 * tier.
@@ -73,14 +98,29 @@ export class EconomySystem {
 
   // ── Monthly tick (invoked from GameManager.onMonthPassed) ────────
 
-  // Returns total stipend paid this month so GameManager can include it in TREASURY_CHANGED.
-  tickMonth(): { stipendsPaid: number } {
+  // Returns the month's stipend + donation totals so GameManager can fold them
+  // into the ledger.
+  tickMonth(): { stipendsPaid: number; donationsReceived: number } {
     const stipendsPaid = this.payMajorPatronStipends();
     this.decayPatronPatience();
     this.maybeOfferMajorPatron();
     this.maybeOfferMinorCommission();
     this.claimEligibleGrants();
-    return { stipendsPaid };
+    const donationsReceived = this.maybeReceiveDonation();
+    return { stipendsPaid, donationsReceived };
+  }
+
+  // A modest, random gift — added straight to the treasury like a stipend, with
+  // a flavorful event for the journal. Returns the amount (0 if none this month).
+  private maybeReceiveDonation(): number {
+    if (!chance(DONATION_CHANCE_PER_MONTH)) return 0;
+    const base = DONATION_MIN + Math.random() * (DONATION_MAX - DONATION_MIN);
+    const prestigeBonus = Math.min(Game.state.prestige * DONATION_PRESTIGE_SCALE, DONATION_PRESTIGE_CAP);
+    const amount = Math.round(base + prestigeBonus);
+    const { source, flavor } = pick(DONATION_FLAVORS);
+    Game.state.treasury += amount;
+    Events.emit(GameEvents.DONATION_RECEIVED, { amount, source, flavor });
+    return amount;
   }
 
   private payMajorPatronStipends(): number {
@@ -329,6 +369,14 @@ export class EconomySystem {
     return Game.state.majorPatrons.reduce((sum, p) => sum + p.stipend, 0);
   }
 
+  // Probability-weighted donation per month — a typical figure for the ledger
+  // projection and runway, not a guarantee (any given month may bring nothing).
+  expectedMonthlyDonation(): number {
+    const avgBase = (DONATION_MIN + DONATION_MAX) / 2;
+    const prestigeBonus = Math.min(Game.state.prestige * DONATION_PRESTIGE_SCALE, DONATION_PRESTIGE_CAP);
+    return Math.round(DONATION_CHANCE_PER_MONTH * (avgBase + prestigeBonus));
+  }
+
   // Average monthly backlist revenue from completed works that still pay.
   monthlyBacklistIncome(): number {
     return Game.state.completedWorks.reduce((sum, work) => {
@@ -345,7 +393,7 @@ export class EconomySystem {
   }
 
   monthlyIncomeTotal(): number {
-    return this.monthlyStipendsIncome() + this.monthlyBacklistIncome();
+    return this.monthlyStipendsIncome() + this.monthlyBacklistIncome() + this.expectedMonthlyDonation();
   }
 
   // Approximate runway in months at current burn (negative net) — Infinity if surplus.

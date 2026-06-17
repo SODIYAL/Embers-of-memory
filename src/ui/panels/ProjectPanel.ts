@@ -36,16 +36,18 @@ const PRIORITY_MAX = 5; // most points allowed on a single priority
 export const MAX_ASSISTANTS = 7;
 
 // Step 0 (mode pick) only shows when a commission is available; otherwise
-// the flow starts at step 1 (topic).
-type Step = 0 | 1 | 2 | 3 | 4 | 5;
-const TOTAL_STEPS = 5;
+// the flow starts at step 1 (topic). The three essential picks (topic, format,
+// lead) come first so a work can be started in three choices; step 4 folds the
+// two optional point-spends (priorities + research approach) into one screen
+// that can be skipped entirely via "Begin Work" on the lead step.
+type Step = 0 | 1 | 2 | 3 | 4;
+const TOTAL_STEPS = 4;
 
-const STEP_TITLES: Record<1 | 2 | 3 | 4 | 5, string> = {
+const STEP_TITLES: Record<1 | 2 | 3 | 4, string> = {
   1: 'Choose a topic',
   2: 'Choose a format',
-  3: 'Set priorities',
-  4: 'Pick the first lead',
-  5: 'Plan the research',
+  3: 'Pick the lead',
+  4: 'Refine · optional',
 };
 
 type WorkMode = 'original' | 'commission';
@@ -136,7 +138,7 @@ export class ProjectPanel {
     }
     const dots: string[] = [];
     for (let i = 1; i <= TOTAL_STEPS; i++) {
-      const s = i as 1 | 2 | 3 | 4 | 5;
+      const s = i as 1 | 2 | 3 | 4;
       const isCurrent = s === this.step;
       const isDone = s < this.step;
       const cls = isCurrent ? 'current' : isDone ? 'done' : 'pending';
@@ -155,9 +157,8 @@ export class ProjectPanel {
       case 0: return this.modeStepHTML();
       case 1: return this.topicStepHTML();
       case 2: return this.formatStepHTML();
-      case 3: return this.prioritiesStepHTML();
-      case 4: return this.leadStepHTML();
-      case 5: return this.emphasisStepHTML();
+      case 3: return this.leadStepHTML();
+      case 4: return this.approachStepHTML();
     }
   }
 
@@ -200,11 +201,24 @@ export class ProjectPanel {
 
   private stepFooterHTML(): string {
     const canNext = this.canAdvance();
-    const isLast  = this.step === TOTAL_STEPS;
     const backDisabled = this.previousStep() === null;
-    const primaryLabel = isLast ? 'Begin Work' : 'Next';
+    const back = `<button class="pp-step-back" id="pp-back" ${backDisabled ? 'disabled' : ''}>Back</button>`;
+
+    // On the lead step the work is fully specified — you can begin straight
+    // away, or step into the optional Refine screen.
+    if (this.step === 3) {
+      return `
+        ${back}
+        <div class="pp-footer-actions">
+          <button class="pp-step-refine" id="pp-refine" ${canNext ? '' : 'disabled'}>Refine ›</button>
+          <button class="pp-step-next" id="pp-next" ${canNext ? '' : 'disabled'}>Begin Work</button>
+        </div>
+      `;
+    }
+
+    const primaryLabel = this.step === TOTAL_STEPS ? 'Begin Work' : 'Next';
     return `
-      <button class="pp-step-back" id="pp-back" ${backDisabled ? 'disabled' : ''}>Back</button>
+      ${back}
       <button class="pp-step-next" id="pp-next" ${canNext ? '' : 'disabled'}>${primaryLabel}</button>
     `;
   }
@@ -288,21 +302,38 @@ export class ProjectPanel {
     `;
   }
 
-  // ── Step 3: Priorities (sliders) ────────────────────────────────
+  // ── Step 4: Refine (priorities + research approach, both optional) ──
 
-  private prioritiesStepHTML(): string {
+  private approachStepHTML(): string {
     const remaining = this.poolRemaining();
+    const spent = STAGE_AXES.research.reduce((s, a) => s + (this.researchEmphasis[a] ?? 0), 0);
+    const emphRemaining = EMPHASIS_POINTS - spent;
+    const topic  = this.selectedTopicId  ? TOPICS.find(t => t.id === this.selectedTopicId)?.name : '';
+    const format = this.selectedFormatId ? FORMATS.find(f => f.id === this.selectedFormatId)?.name : '';
     return `
-      <div class="pp-step pp-step-priorities">
-        <div class="pp-priorities-head">
-          <p class="pp-step-hint">Spend ${POOL} points to shape the work. Each point lifts that quality — and nudges your institution's character. Spend as few or as many as you like.</p>
-          <div class="pp-pool-indicator">
-            <span class="pp-pool-num" id="pp-pool-num">${remaining}</span>
-            <span class="pp-pool-label">point${remaining === 1 ? '' : 's'} left</span>
+      <div class="pp-step pp-step-approach">
+        <p class="pp-step-hint pp-approach-intro">Optional — shape the <strong>${format ?? 'work'}</strong> on <strong>${topic ?? '—'}</strong>, or simply <strong>Begin Work</strong> with a balanced approach.</p>
+
+        <div class="pp-approach-section">
+          <div class="pp-priorities-head">
+            <p class="pp-step-hint">Spend ${POOL} points to set the work's <strong>priorities</strong>. Each point lifts that quality — and nudges your institution's character.</p>
+            <div class="pp-pool-indicator">
+              <span class="pp-pool-num" id="pp-pool-num">${remaining}</span>
+              <span class="pp-pool-label">point${remaining === 1 ? '' : 's'} left</span>
+            </div>
           </div>
+          <div class="pp-pips">${PRIORITY_KEYS.map(k => this.priorityCardHTML(k)).join('')}</div>
         </div>
-        <div class="pp-pips">
-          ${PRIORITY_KEYS.map(k => this.priorityCardHTML(k)).join('')}
+
+        <div class="pp-approach-section">
+          <div class="pp-priorities-head">
+            <p class="pp-step-hint">Spend ${EMPHASIS_POINTS} points on the <strong>research approach</strong> for stage one.</p>
+            <div class="pp-pool-indicator">
+              <span class="pp-pool-num" id="pp-emph-num">${emphRemaining}</span>
+              <span class="pp-pool-label">point${emphRemaining === 1 ? '' : 's'} left</span>
+            </div>
+          </div>
+          <div class="pp-pips">${STAGE_AXES.research.map(axis => this.emphasisCardHTML(axis)).join('')}</div>
         </div>
       </div>
     `;
@@ -328,7 +359,7 @@ export class ProjectPanel {
     `;
   }
 
-  // ── Step 4: Lead ────────────────────────────────────────────────
+  // ── Step 3: Lead ────────────────────────────────────────────────
 
   private leadStepHTML(): string {
     const scholars = Game.state.scholars;
@@ -345,6 +376,18 @@ export class ProjectPanel {
       }
       // Only highlight if it's actually a non-trivial match
       if (bestScore < 3) recommendedId = null;
+    }
+
+    // Default the lead to the strongest available scholar so the player can
+    // just press Begin Work; they can still pick anyone else.
+    if (this.selectedScholarId === null) {
+      let bestId: string | null = null, best = -1;
+      for (const s of scholars) {
+        if (!s.isAvailable) continue;
+        const score = topicName ? (s.disciplines[topicName] ?? 0) : 0;
+        if (score > best) { best = score; bestId = s.id; }
+      }
+      this.selectedScholarId = bestId;
     }
 
     return `
@@ -435,29 +478,7 @@ export class ProjectPanel {
     `;
   }
 
-  // ── Step 5: Research emphasis ───────────────────────────────────
-
-  private emphasisStepHTML(): string {
-    const spent = STAGE_AXES.research.reduce((s, a) => s + (this.researchEmphasis[a] ?? 0), 0);
-    const remaining = EMPHASIS_POINTS - spent;
-    const topic = this.selectedTopicId ? TOPICS.find(t => t.id === this.selectedTopicId)?.name : '';
-    const format = this.selectedFormatId ? FORMATS.find(f => f.id === this.selectedFormatId)?.name : '';
-
-    return `
-      <div class="pp-step pp-step-emphasis">
-        <div class="pp-priorities-head">
-          <p class="pp-step-hint">How should your team approach <strong>${topic ?? '—'}</strong> research for this <strong>${format ?? '—'}</strong>? Spend ${EMPHASIS_POINTS} points across the three approaches. <span class="pp-suggest-hint">Different topics + formats reward different mixes — discover what works.</span></p>
-          <div class="pp-pool-indicator">
-            <span class="pp-pool-num" id="pp-emph-num">${remaining}</span>
-            <span class="pp-pool-label">point${remaining === 1 ? '' : 's'} left</span>
-          </div>
-        </div>
-        <div class="pp-pips">
-          ${STAGE_AXES.research.map(axis => this.emphasisCardHTML(axis)).join('')}
-        </div>
-      </div>
-    `;
-  }
+  // ── Research emphasis pip card (rendered inside the Refine step) ───
 
   private emphasisCardHTML(axis: string): string {
     const val = this.researchEmphasis[axis] ?? 0;
@@ -530,7 +551,9 @@ export class ProjectPanel {
     });
     el.querySelector<HTMLButtonElement>('#pp-next')!.addEventListener('click', () => {
       if (!this.canAdvance()) return;
-      if (this.step === TOTAL_STEPS) {
+      // "Begin Work" is the primary action on the lead step (3) and the
+      // optional refine step (4); earlier steps just advance.
+      if (this.step === 3 || this.step === TOTAL_STEPS) {
         this.beginWork();
       } else {
         const target = this.nextStep();
@@ -541,6 +564,13 @@ export class ProjectPanel {
           this.renderStep();
         }
       }
+    });
+
+    // Optional "Refine ›" link on the lead step → the (skippable) refine step.
+    el.querySelector<HTMLButtonElement>('#pp-refine')?.addEventListener('click', () => {
+      if (!this.canAdvance()) return;
+      this.step = 4;
+      this.renderStep();
     });
 
     // Step-specific bindings
@@ -582,25 +612,7 @@ export class ProjectPanel {
           });
         });
         break;
-      case 3: {
-        // Pip cards: +/− buttons and the pips themselves spend from the pool.
-        const bump = (key: string, delta: number) =>
-          this.setPriority(key, (this.priorities[key] ?? 0) + delta);
-        el.querySelectorAll<HTMLButtonElement>('.pp-pip-plus').forEach(btn =>
-          btn.addEventListener('click', () => bump(btn.dataset.key!, +1)));
-        el.querySelectorAll<HTMLButtonElement>('.pp-pip-minus').forEach(btn =>
-          btn.addEventListener('click', () => bump(btn.dataset.key!, -1)));
-        el.querySelectorAll<HTMLElement>('.pp-pip').forEach(pip =>
-          pip.addEventListener('click', () => {
-            const key = pip.dataset.key!;
-            const i = Number(pip.dataset.i); // 1-based pip position
-            // Click the highest lit pip to clear it; otherwise fill up to here.
-            const current = this.priorities[key] ?? 0;
-            this.setPriority(key, i === current ? i - 1 : i);
-          }));
-        break;
-      }
-      case 4:
+      case 3:
         el.querySelectorAll<HTMLElement>('.pp-scholar-card').forEach(card => {
           card.addEventListener('click', () => {
             if (card.classList.contains('unavailable')) return;
@@ -610,18 +622,33 @@ export class ProjectPanel {
           });
         });
         break;
-      case 5: {
-        // Same pip cards as step 3, over the research-emphasis pool.
-        const bump = (axis: string, delta: number) =>
+      case 4: {
+        // Two pip pools on one screen: priorities (data-key) and research
+        // approach (data-axis). Bind each by its distinguishing attribute.
+        const bumpP = (key: string, delta: number) =>
+          this.setPriority(key, (this.priorities[key] ?? 0) + delta);
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-plus[data-key]').forEach(btn =>
+          btn.addEventListener('click', () => bumpP(btn.dataset.key!, +1)));
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-minus[data-key]').forEach(btn =>
+          btn.addEventListener('click', () => bumpP(btn.dataset.key!, -1)));
+        el.querySelectorAll<HTMLElement>('.pp-pip[data-key]').forEach(pip =>
+          pip.addEventListener('click', () => {
+            const key = pip.dataset.key!;
+            const i = Number(pip.dataset.i);
+            const current = this.priorities[key] ?? 0;
+            this.setPriority(key, i === current ? i - 1 : i);
+          }));
+
+        const bumpE = (axis: string, delta: number) =>
           this.setEmphasis(axis, (this.researchEmphasis[axis] ?? 0) + delta);
-        el.querySelectorAll<HTMLButtonElement>('.pp-pip-plus').forEach(btn =>
-          btn.addEventListener('click', () => bump(btn.dataset.axis!, +1)));
-        el.querySelectorAll<HTMLButtonElement>('.pp-pip-minus').forEach(btn =>
-          btn.addEventListener('click', () => bump(btn.dataset.axis!, -1)));
-        el.querySelectorAll<HTMLElement>('.pp-pip').forEach(pip =>
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-plus[data-axis]').forEach(btn =>
+          btn.addEventListener('click', () => bumpE(btn.dataset.axis!, +1)));
+        el.querySelectorAll<HTMLButtonElement>('.pp-pip-minus[data-axis]').forEach(btn =>
+          btn.addEventListener('click', () => bumpE(btn.dataset.axis!, -1)));
+        el.querySelectorAll<HTMLElement>('.pp-pip[data-axis]').forEach(pip =>
           pip.addEventListener('click', () => {
             const axis = pip.dataset.axis!;
-            const i = Number(pip.dataset.i); // 1-based pip position
+            const i = Number(pip.dataset.i);
             const current = this.researchEmphasis[axis] ?? 0;
             this.setEmphasis(axis, i === current ? i - 1 : i);
           }));
@@ -653,9 +680,8 @@ export class ProjectPanel {
       case 0: return true; // mode is always pre-set to 'original'; commission card can be clicked
       case 1: return !!this.selectedTopicId;
       case 2: return !!this.selectedFormatId;
-      case 3: return true; // priorities optional; player may spend zero
-      case 4: return !!this.selectedScholarId;
-      case 5: return true; // emphasis optional; zero == neutral split
+      case 3: return !!this.selectedScholarId; // lead required — then you may begin or refine
+      case 4: return true; // refine is optional; zero spend == neutral
     }
   }
 
@@ -664,7 +690,8 @@ export class ProjectPanel {
   private nextStep(): Step | null {
     let next = (this.step + 1) as Step;
     if (this.mode === 'commission') {
-      // Skip topic (1) and format (2) — they were locked in by the commission.
+      // Skip topic (1) and format (2) — they were locked in by the commission;
+      // jump straight to the lead pick (3).
       if (next === 1 || next === 2) next = 3;
     }
     if (next > TOTAL_STEPS) return null;

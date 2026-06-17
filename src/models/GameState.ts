@@ -18,6 +18,10 @@ export interface GameState {
   treasuryWarningTier: 'strained' | 'critical' | null;
   patronGranted: boolean;
 
+  // Daily treasury samples for the finances graph (oldest first, newest last).
+  // Capped to a rolling window; absent on saves from before the graph existed.
+  treasuryHistory?: number[];
+
   // Recruitment
   currentCandidates: Scholar[];
   lastRecruitmentDay: number; // 0 = never recruited

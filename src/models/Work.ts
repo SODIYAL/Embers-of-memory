@@ -43,7 +43,8 @@ export interface WorkSalesState {
   startDay: number;            // day of release
   endDay: number;              // day sales close
   projectedTotal: number;      // best-effort projection at start (= work.revenue)
-  earnedTotal: number;         // gold earned so far
+  preorder?: number;           // lump earned upfront at release (counts toward earnedTotal)
+  earnedTotal: number;         // gold earned so far (includes the preorder)
   daysActive: number;          // days elapsed since release (caps at window)
   complete: boolean;           // true once endDay reached or rights sold
   // Daily curve seed so the same work earns consistently across saves.

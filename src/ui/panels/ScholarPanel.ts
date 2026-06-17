@@ -310,6 +310,9 @@ export class ScholarPanel {
     } else {
       scholar.isResting = true;
       scholar.isAvailable = false;
+      // A break eases their restlessness right away.
+      scholar.restlessness = Math.max(0, (scholar.restlessness ?? 0) - 3);
+      scholar.restlessFlagged = false;
       Events.emit(GameEvents.SCHOLAR_REST_STARTED, { scholarId });
     }
     this.rebuild();

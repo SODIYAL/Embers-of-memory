@@ -67,15 +67,26 @@ export class StageGateModal {
     // Plus: the previous stage's lead is now idle again (released by ProjectSystem
     // before openStageGate), so they appear in the list naturally.
 
+    // Pre-select the strongest available lead for this topic so the player can
+    // simply confirm. They can still pick anyone else.
+    let bestId: string | null = candidates[0]?.id ?? null;
+    let bestScore = -1;
+    for (const s of candidates) {
+      const sk = s.disciplines[topicName] ?? 0;
+      if (sk > bestScore) { bestScore = sk; bestId = s.id; }
+    }
+    this.selectedScholarId = bestId;
+
     const optionsHTML = candidates.map(s => {
       const skill = s.disciplines[topicName] ?? 0;
       const tag = skill >= 7 ? 'strong'
                 : skill >= 4 ? 'capable'
                 : skill >= 2 ? 'modest'
                 : 'untested';
+      const isBest = s.id === bestId;
       return `
-        <button class="modal-btn modal-btn-choice stage-lead-btn" data-id="${s.id}">
-          <span class="modal-btn-label">${s.name}</span>
+        <button class="modal-btn modal-btn-choice stage-lead-btn${isBest ? ' selected' : ''}" data-id="${s.id}">
+          <span class="modal-btn-label">${s.name}${isBest ? ' <span class="stage-lead-best">★ Best fit</span>' : ''}</span>
           <span class="modal-btn-blurb">${topicName} ${skill}/10 · ${tag} · primary: ${s.primaryDiscipline}</span>
         </button>
       `;
@@ -134,7 +145,7 @@ export class StageGateModal {
         </div>
 
         <div class="stage-gate-footer">
-          <button class="modal-btn" id="stage-gate-confirm" disabled>Begin ${nextInfo.label.toLowerCase()}</button>
+          <button class="modal-btn" id="stage-gate-confirm" ${this.selectedScholarId ? '' : 'disabled'}>Begin ${nextInfo.label.toLowerCase()}</button>
         </div>
       </div>
     `;

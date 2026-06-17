@@ -8,6 +8,11 @@ import type { Work, WorkSalesState } from '../models/Work';
 // variance that reflects "reception."
 export const SALES_WINDOW_DAYS = 90;
 
+// Share of the projected total taken upfront as preorders (anticipation before
+// the public window opens). Paid immediately on release; the rest sells across
+// the runtime, so lifetime earnings still ≈ projectedTotal.
+export const PREORDER_FRACTION = 0.18;
+
 // Curve parameters. The continuous density f(t) = a · exp(-t / τ) is
 // normalized so ∫₀^W f(t) dt = projectedTotal. Discretized to per-day buckets.
 const TAU_DAYS = 22;
@@ -32,11 +37,15 @@ export class SalesSystem {
   // for original (non-commission) player works.
   beginSales(work: Work, projectedTotal: number) {
     const seed = Math.floor(Math.random() * 1e9);
+    // Preorders are taken upfront and credited now; they count toward the
+    // lifetime total, so the runtime window distributes only the remainder.
+    const preorder = Math.round(projectedTotal * PREORDER_FRACTION);
     const state: WorkSalesState = {
       startDay: Game.state.day,
       endDay:   Game.state.day + SALES_WINDOW_DAYS,
       projectedTotal,
-      earnedTotal: 0,
+      preorder,
+      earnedTotal: preorder,
       daysActive:  0,
       complete:    false,
       seed,
@@ -46,6 +55,11 @@ export class SalesSystem {
     // Persist the projection on the work itself too — revenue field now
     // represents the projected total, not a lump payout.
     work.revenue = projectedTotal;
+
+    if (preorder > 0) {
+      Game.state.treasury += preorder;
+      Events.emit(GameEvents.TREASURY_CHANGED, { amount: Game.state.treasury });
+    }
   }
 
   // Cancel sales early (e.g. work rights sold). Marks complete; any
@@ -129,6 +143,9 @@ export class SalesSystem {
     // Variance: small deterministic jitter from a hashed (seed, day) PRNG
     const jitter = 0.85 + this.seededRand(sales.seed, dayIdx) * 0.30;
 
+    // The runtime window distributes everything except the upfront preorder.
+    const windowTotal = sales.projectedTotal - (sales.preorder ?? 0);
+
     // Final day adjustment — make sure we don't overshoot or undershoot the
     // projection too far. On the last day, pay any remaining shortfall so
     // earnedTotal ≈ projectedTotal regardless of accumulated jitter.
@@ -136,7 +153,7 @@ export class SalesSystem {
       return Math.max(0, Math.round(sales.projectedTotal - sales.earnedTotal));
     }
 
-    return Math.max(0, Math.round(sales.projectedTotal * fraction * jitter));
+    return Math.max(0, Math.round(windowTotal * fraction * jitter));
   }
 
   // Deterministic small PRNG seeded by (seed, dayIdx). Returns [0, 1).

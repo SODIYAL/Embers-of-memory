@@ -41,8 +41,9 @@ export class TreasuryPanel {
     const ops       = this.economy.monthlyOperationalCost();
     const stipends  = this.economy.monthlyStipendsIncome();
     const backlist  = Math.round(this.economy.monthlyBacklistIncome());
+    const donations = this.economy.expectedMonthlyDonation();
     const expense   = salaries + upkeep + ops;
-    const income    = Math.round(stipends + backlist);
+    const income    = Math.round(stipends + backlist + donations);
     const net       = income - expense;
     const runway    = this.economy.runwayMonths();
     const runwayLabel = runway === Infinity ? 'indefinite' : `~${runway} month${runway === 1 ? '' : 's'}`;
@@ -73,6 +74,7 @@ export class TreasuryPanel {
               <h3 class="tp-col-heading">Monthly income</h3>
               <div class="tp-row"><span>Patron stipends</span><span class="tp-pos">+${stipends}</span></div>
               <div class="tp-row"><span>Backlist trickle</span><span class="tp-pos">+${backlist}</span></div>
+              <div class="tp-row"><span>Alms &amp; gifts <em class="tp-variable">(varies)</em></span><span class="tp-pos">~+${donations}</span></div>
               <div class="tp-row tp-row-total"><span>Total</span><span class="tp-pos">+${income}</span></div>
             </div>
             <div class="tp-col">

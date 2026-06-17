@@ -6,6 +6,7 @@ import { getBand, BAND_LABELS, getScore, pairs } from '../../game/Chemistry';
 import { AXIS_INFO } from '../../models/Ideology';
 import type { IdeologyVector, IdeologyAxis } from '../../models/Ideology';
 import { STAGE_INFO } from '../../models/Project';
+import { SALES_WINDOW_DAYS } from '../../systems/SalesSystem';
 import { STAGE_AXES, matchLabel } from '../../data/stageEmphasis';
 import { computeFactionReactions } from '../../data/factionReactions';
 import type { FactionReaction } from '../../data/factionReactions';
@@ -27,7 +28,7 @@ export class ReleaseReportModal {
           <div class="release-title-v2">${work.title}</div>
           <div class="release-ornament">— ✦ —</div>
           <div class="release-quality-v2">${work.qualityDescriptor}</div>
-          <div class="release-revenue-chip">+${work.revenue} gold</div>
+          ${this.economicsHTML(work)}
         </div>
 
         ${this.criticsHTML(reactions)}
@@ -50,6 +51,32 @@ export class ReleaseReportModal {
   hide() {
     this.el?.remove();
     this.el = null;
+  }
+
+  // ── Release economics ───────────────────────────────────────────────
+  // Original works don't have a known lifetime total at release — they earn
+  // a preorder lump upfront, then sell across the runtime. Commission works
+  // (no salesState) pay a flat, known lump, so they keep the single chip.
+
+  private economicsHTML(work: Work): string {
+    const sales = work.salesState;
+    if (!sales) {
+      return `<div class="release-revenue-chip">+${work.revenue} gold</div>`;
+    }
+    const preorder = sales.preorder ?? 0;
+    return `
+      <div class="release-sales-v2">
+        <div class="release-sales-headline">
+          <span class="release-sales-label">Preorders</span>
+          <span class="release-revenue-chip">+${preorder} gold</span>
+        </div>
+        <div class="release-sales-note">
+          Now in release — it sells over the next ${SALES_WINDOW_DAYS} days. The coffers
+          fill day by day; its full earnings are tallied only when the run closes.
+          Follow the Treasury to watch it climb.
+        </div>
+      </div>
+    `;
   }
 
   // ── Critics panel ───────────────────────────────────────────────────

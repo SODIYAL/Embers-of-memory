@@ -1,42 +1,22 @@
-/* Shared pixel-art UI theme — loaded once from main.ts.
-   The palette mirrors scripts/draw-pixel-ui.mjs; keep them in sync. */
+/* ─────────────────────────────────────────────────────────────────────
+   Overlay base — the reused panels & modals live in #ui-layer and now
+   share the illuminated-manuscript world of the main view.
 
-:root {
-  --ink: #18100a;
-  --shadow: #2e1c0c;
-  --wood: #5c3418;
-  --wood-light: #6e3e1c;
-  --parchment: #e8d5b0;
-  --parchment-dark: #d6be94;
-  --gold: #d4a855;
-  --gold-dark: #a87c36;
-  --highlight: #f2d19a;
-  --ember: #c87a4a;
-  --font-display: 'Alagard', Georgia, serif;
-  --font-body: Georgia, serif;
-}
+   Each panel/modal owns its own colors (see their CSS). This file only:
+     • retires the old pixel-era global overrides (forced square corners,
+       chunky wood borders, dark drop-shadows) that fought the parchment,
+     • keeps the pixel founder-portraits crisp (they read as woodcut minis),
+     • sets the chrome the panels don't each repeat: the Alagard display
+       face on titles, and in-parchment scrollbars.
 
-/* Pixel-art surfaces: no rounded corners anywhere in the overlay UI, and
-   every raster image (portraits, icons, chips) keeps its texels sharp. */
-#ui-layer * { border-radius: 0 !important; }
+   Palette tokens live on :root in manuscript.css; the panels reference the
+   same values directly (parchment surfaces, sepia ink, gilt + rubric).
+   ───────────────────────────────────────────────────────────────────── */
+
+/* Pixel portraits stay sharp; smooth everything else. */
 #ui-layer img { image-rendering: pixelated; }
 
-/* Chunky stacked border for panels and modals — replaces the hairline. */
-#ui-layer .project-panel,
-#ui-layer .scholar-panel,
-#ui-layer .institution-panel,
-#ui-layer .treasury-panel,
-#ui-layer .ideology-panel,
-#ui-layer .world-panel,
-#ui-layer .modal-card,
-#ui-layer .event-modal-card,
-#ui-layer .release-modal-card,
-#ui-layer .release-modal-card-v2 {
-  border: 2px solid var(--wood) !important;
-  box-shadow: 0 0 0 2px var(--ink), 0 12px 48px rgba(0, 0, 0, 0.85) !important;
-}
-
-/* Display headers in the pixel face; body copy stays a readable serif. */
+/* Display headers in the Alagard face; body copy stays a readable serif. */
 #ui-layer .panel-title,
 #ui-layer .ip-title,
 #ui-layer .wp-title,
@@ -47,3 +27,12 @@
   font-family: var(--font-display);
   letter-spacing: 0.04em;
 }
+
+/* In-parchment scrollbars for any scrolling region inside the overlay. */
+#ui-layer *::-webkit-scrollbar { width: 9px; height: 9px; }
+#ui-layer *::-webkit-scrollbar-thumb {
+  background: var(--gilt-deep, #8a6420);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+#ui-layer *::-webkit-scrollbar-track { background: transparent; }

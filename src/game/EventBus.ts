@@ -47,6 +47,7 @@ export const GameEvents = {
   MINOR_COMMISSION_DECLINED:  'economy:minor_commission_declined',
   MINOR_COMMISSION_COMPLETED: 'economy:minor_commission_completed',
   GRANT_CLAIMED:              'economy:grant_claimed',
+  DONATION_RECEIVED:          'economy:donation_received',
   WORK_RIGHTS_SOLD:           'economy:work_rights_sold',
   PATRON_APPEAL_USED:         'economy:patron_appeal_used',
   IDEOLOGY_DRIFT:             'ideology:drift',
@@ -96,6 +97,7 @@ export interface EventPayloads {
     month: number;
     backlist: number;
     stipends: number;
+    donations: number;
     salaries: number;
     upkeep: number;
     ops: number;
@@ -131,6 +133,7 @@ export interface EventPayloads {
   [GameEvents.MINOR_COMMISSION_DECLINED]:  { commissionId: string; patronName: string };
   [GameEvents.MINOR_COMMISSION_COMPLETED]: { commissionId: string; patronName: string; payment: number };
   [GameEvents.GRANT_CLAIMED]:              { grantId: string; amount: number; flavor: string };
+  [GameEvents.DONATION_RECEIVED]:          { amount: number; source: string; flavor: string };
   [GameEvents.WORK_RIGHTS_SOLD]:           { workId: string; workTitle: string; amount: number };
   [GameEvents.PATRON_APPEAL_USED]:         { amount: number };
   [GameEvents.IDEOLOGY_DRIFT]:             {

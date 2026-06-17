@@ -5,6 +5,14 @@ import { STARTER_SCHOLARS, FOUNDER_CANDIDATES } from '../data/scholars';
 import { RIVALS } from '../data/rivals';
 import { TOPICS } from '../data/topics';
 import { EconomySystem } from '../systems/EconomySystem';
+import { ProjectSystem } from '../systems/ProjectSystem';
+import { RecruitmentSystem } from '../systems/RecruitmentSystem';
+import { MilestoneSystem } from '../systems/MilestoneSystem';
+import { InstitutionSystem } from '../systems/InstitutionSystem';
+import { DepartmentSystem } from '../systems/DepartmentSystem';
+import { WorldSystem } from '../systems/WorldSystem';
+import { ReprintSystem } from '../systems/ReprintSystem';
+import { SalesSystem } from '../systems/SalesSystem';
 import type { GameState } from '../models/GameState';
 import type { Project, StageRecord } from '../models/Project';
 import type { Scholar } from '../models/Scholar';
@@ -12,8 +20,10 @@ import type { Scholar } from '../models/Scholar';
 // Restlessness — accumulates each month a scholar isn't doing meaningful work.
 // At 3 the scholar shows a restless flag (signal to the player).
 // At 6 they leave.
-const RESTLESS_FLAG_THRESHOLD = 3;
-const RESTLESS_LEAVE_THRESHOLD = 6;
+// Restlessness builds slowly — idle scholars take many months to grow uneasy,
+// and resting (a chosen break) relieves it. Flag is a warning; leave is the end.
+const RESTLESS_FLAG_THRESHOLD = 5;
+const RESTLESS_LEAVE_THRESHOLD = 10;
 
 // The 5 starting scholars — used to trigger founder-succession ceremonies.
 const FOUNDER_IDS = new Set(['yildiz', 'ossavi', 'meridian', 'vasara', 'harlow']);
@@ -22,10 +32,29 @@ export class GameManager {
   state: GameState;
   time: TimeManager;
   readonly save = new SaveManager();
+  // The game's systems all live here now (formerly split between GameManager
+  // and the old Phaser CampusScene). GameManager owns their lifecycle; the DOM
+  // UI reads them for the panels (e.g. ScholarPanel needs `recruitment`).
   readonly economy = new EconomySystem();
+  readonly project = new ProjectSystem();
+  readonly recruitment = new RecruitmentSystem();
+  readonly milestones = new MilestoneSystem();
+  readonly institution = new InstitutionSystem();
+  readonly departments = new DepartmentSystem();
+  readonly world = new WorldSystem();
+  readonly reprints = new ReprintSystem();
+  readonly sales = new SalesSystem();
   private started = false;
   private readonly onDayPassed = ({ day }: { day: number }) => {
     this.state.day = day;
+    // Sample the treasury once a day for the finances graph. This listener is
+    // registered last in start(), so it runs after the day's sales are credited.
+    if (!this.state.treasuryHistory) this.state.treasuryHistory = [];
+    this.state.treasuryHistory.push(this.state.treasury);
+    const MAX_HISTORY = 540; // ~1.5 years; keep localStorage bounded
+    if (this.state.treasuryHistory.length > MAX_HISTORY) {
+      this.state.treasuryHistory.splice(0, this.state.treasuryHistory.length - MAX_HISTORY);
+    }
   };
   private readonly handleMonthPassed = () => this.onMonthPassed();
   private readonly handleYearPassed = () => this.onYearPassed();
@@ -50,6 +79,7 @@ export class GameManager {
       version: CURRENT_SAVE_VERSION,
       day: 1,
       treasury: 300,
+      treasuryHistory: [300],
       prestige: 0,
       scholars: STARTER_SCHOLARS.map(s => ({ ...s })),
       activeProject: undefined,
@@ -109,8 +139,19 @@ export class GameManager {
   start() {
     if (this.started) return;
     this.started = true;
-    this.time.start();
+
+    // Systems register their event listeners first, before the clock ticks.
+    // Each system's init() is idempotent (guarded), so re-entering the game
+    // after a reset doesn't double-register.
     this.economy.init();
+    this.project.init();
+    this.recruitment.init();
+    this.milestones.init();
+    this.institution.init();
+    this.departments.init();
+    this.world.init();
+    this.reprints.init();
+    this.sales.init();
 
     Events.on(GameEvents.DAY_PASSED, this.onDayPassed);
     Events.on(GameEvents.MONTH_PASSED, this.handleMonthPassed);
@@ -122,6 +163,9 @@ export class GameManager {
     Events.on(GameEvents.PROJECT_CANCELLED, this.onProjectCancelled);
     Events.on(GameEvents.WORK_RELEASED,     this.onWorkReleased);
     Events.on(GameEvents.SCHOLAR_HIRED, this.onScholarHired);
+
+    // Begin the clock last, so no tick fires before everything is wired.
+    this.time.start();
   }
 
   private stopEventListeners() {
@@ -189,8 +233,9 @@ export class GameManager {
     const backlist  = this.calculateBacklistRevenue();
     this.state.treasury += backlist;
 
-    // Patron stipends, commissions offered, grants claimed, patron patience.
-    const { stipendsPaid } = this.economy.tickMonth();
+    // Patron stipends, donations, commissions offered, grants claimed, patron patience.
+    // (Stipends and donations are added to the treasury inside tickMonth.)
+    const { stipendsPaid, donationsReceived } = this.economy.tickMonth();
 
     // ── Expenses ──
     const salaries = this.economy.monthlySalaries();
@@ -200,14 +245,15 @@ export class GameManager {
 
     Events.emit(GameEvents.TREASURY_CHANGED, { amount: this.state.treasury });
     Events.emit(GameEvents.MONTH_LEDGER, {
-      month:    Math.floor((this.state.day - 1) / 30) + 1,
+      month:     Math.floor((this.state.day - 1) / 30) + 1,
       backlist,
-      stipends: stipendsPaid,
+      stipends:  stipendsPaid,
+      donations: donationsReceived,
       salaries,
       upkeep,
       ops,
-      net:      backlist + stipendsPaid - salaries - upkeep - ops,
-      treasury: this.state.treasury,
+      net:       backlist + stipendsPaid + donationsReceived - salaries - upkeep - ops,
+      treasury:  this.state.treasury,
     });
 
     // ── Post-settlement checks ──
@@ -248,6 +294,14 @@ export class GameManager {
     // Iterate over a snapshot since scholars may leave mid-loop.
     const snapshot = [...this.state.scholars];
     for (const scholar of snapshot) {
+      // Resting is a deliberate break — it steadily relieves restlessness, and
+      // a resting scholar never grows restless enough to leave.
+      if (scholar.isResting) {
+        scholar.restlessness = Math.max(0, scholar.restlessness - 2);
+        if (scholar.restlessness < RESTLESS_FLAG_THRESHOLD) scholar.restlessFlagged = false;
+        continue;
+      }
+
       const isLead = currentStage?.leadScholarId === scholar.id;
       const isAssistant = currentStage?.assistantScholarIds.includes(scholar.id) ?? false;
       const working = isLead || isAssistant;
